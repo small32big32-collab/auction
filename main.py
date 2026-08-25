@@ -47,12 +47,15 @@ def get_items_by_key(license_key: str):
   unique_items = {}
   for row in items.data:
     i_id = row.get("item_id")
-    if i_id and i_id not in unique_items:
-      rarity = row.get("rarity")
-      if not rarity or rarity == "None":
-        rarity = "Обычный"
+    rarity = row.get("rarity") or "Обычный"
+    if rarity == "None":
+      rarity = "Обычный"
 
-      unique_items[i_id] = {
+    # Группируем по уникальной комбинации ID предмета и его редкости
+    composite_key = f"{i_id}_{rarity}"
+
+    if i_id and composite_key not in unique_items:
+      unique_items[composite_key] = {
           "item_id": i_id,
           "name": row.get("item_name") or i_id,
           "rarity": rarity,
