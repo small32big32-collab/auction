@@ -1,3 +1,4 @@
+import os
 import asyncio
 import uuid
 import httpx
@@ -8,8 +9,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import LabeledPrice
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-BOT_TOKEN = "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE"
-API_BASE_URL = "https://server-auth-7cw9.onrender.com/api/v1"
+# Используем переменные окружения, с запасными значениями для локального запуска
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
+
+# Остальной ваш код бота...
 
 # Настройки Platega
 PLATEGA_API_URL = "https://api.platega.io/v1/invoice"
