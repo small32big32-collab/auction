@@ -1,0 +1,25 @@
+name: Stalzone Collector
+
+on:
+  schedule:
+    - cron: '*/15 * * * *' # Запуск каждые 15 минут
+  workflow_dispatch: # Позволяет запускать скрипт вручную кнопкой с сайта GitHub
+
+jobs:
+  run-collector:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run collector
+        run: python collector.py
