@@ -9,7 +9,7 @@ from aiogram.types import LabeledPrice
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE"
-API_BASE_URL = "http://127.0.0.1:8000/api/v1"
+API_BASE_URL = "https://server-auth-7cw9.onrender.com/api/v1"
 
 # Настройки Platega
 PLATEGA_API_URL = "https://api.platega.io/v1/invoice"
