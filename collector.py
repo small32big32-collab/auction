@@ -20,6 +20,16 @@ TARGET_CATEGORIES = {
     "artefact": "Артефакт",
 }
 
+# Соответствие цифрового качества EXBO текстовым редкостям
+QUALITY_MAP = {
+    0: "Обычный",
+    1: "Необычный",
+    2: "Особый",
+    3: "Редкий",
+    4: "Исключительный",
+    5: "Легендарный",
+}
+
 
 def load_valuable_items() -> list[dict]:
   base_dir = Path(__file__).parent / "stalzone-database" / "ru" / "items"
@@ -40,26 +50,10 @@ def load_valuable_items() -> list[dict]:
           lines = data.get("name", {}).get("lines", {})
           name = lines.get("ru") or lines.get("en") or item_id
 
-          rarity_str = "Обычный"
-          for block in data.get("infoBlocks", []):
-            for el in block.get("elements", []):
-              if el.get("type") == "key-value":
-                k_data = el.get("key", {})
-                k_key = k_data.get("key", "")
-                if k_key.startswith("core.quality."):
-                  rarity_str = k_data.get("lines", {}).get("ru", "Обычный")
-                  break
-            else:
-              continue
-            break
-
           if item_id and name:
-            items_list.append({
-                "id": item_id,
-                "name": name,
-                "rarity": rarity_str,
-                "category": cat_name,
-            })
+            items_list.append(
+                {"id": item_id, "name": name, "category": cat_name}
+            )
       except Exception:
         continue
   return items_list
@@ -106,34 +100,46 @@ def collect_iteration(items: list[dict]):
         res = client.get(
             auction_url,
             headers=headers,
-            params={"limit": 1, "sort": "buyout_price", "order": "asc"},
+            params={"limit": 50, "sort": "buyout_price", "order": "asc"},
         )
 
         if res.status_code == 200:
           data = res.json()
           lots = data.get("lots", [])
-          total = data.get("total", 0)
 
-          if total == 0 or not lots:
+          if not lots:
             continue
 
-          min_price = lots[0].get("buyoutPrice", 0)
-          if min_price == 0:
-            min_price = lots[0].get("startPrice", 0)
+          # Собираем минимальные цены отдельно для каждого качества/редкости из лотов
+          rarity_data = {}
+          for lot in lots:
+            qlt = lot.get("qlt") if lot.get("qlt") is not None else lot.get("quality", 0)
+            rarity_name = QUALITY_MAP.get(qlt, "Обычный")
 
-          row = {
-              "item_id": item_id,
-              "item_name": item["name"],
-              "rarity": item["rarity"],
-              "category": item["category"],
-              "min_buyout_price": min_price,
-              "total_lots": total,
-          }
-          supabase.table("price_history").insert(row).execute()
-          print(
-              f"[+] [{item['category']}] {item['name']} ({item['rarity']}): выкуп"
-              f" {min_price:,} руб."
-          )
+            price = lot.get("buyoutPrice") or lot.get("startPrice", 0)
+            if price > 0:
+              if rarity_name not in rarity_data:
+                rarity_data[rarity_name] = {"min_price": price, "count": 0}
+              rarity_data[rarity_name]["count"] += 1
+              if price < rarity_data[rarity_name]["min_price"]:
+                rarity_data[rarity_name]["min_price"] = price
+
+          # Записываем в базу каждый найденный вариант редкости
+          for r_name, info in rarity_data.items():
+            row = {
+                "item_id": item_id,
+                "item_name": item["name"],
+                "rarity": r_name,
+                "category": item["category"],
+                "min_buyout_price": info["min_price"],
+                "total_lots": info["count"],
+            }
+            supabase.table("price_history").insert(row).execute()
+            print(
+                f"[+] [{item['category']}] {item['name']} ({r_name}): выкуп"
+                f" {info['min_price']:,} руб."
+            )
+
         elif res.status_code == 429:
           print(
               "⚠️ Слишком много запросов (Rate Limit), ждем 5 секунд..."
