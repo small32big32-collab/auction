@@ -93,6 +93,9 @@ def collect_iteration(items: list[dict]):
         f"\n--- Сбор цен по выкупу ({time.strftime('%H:%M:%S')}) ---"
     )
 
+    # Возьмем для отладки первый же предмет со списком лотов
+    debug_printed = False
+
     for item in items:
       item_id = item["id"]
       try:
@@ -110,11 +113,25 @@ def collect_iteration(items: list[dict]):
           if not lots:
             continue
 
-          # Собираем минимальные цены отдельно для каждого качества/редкости из лотов
+          # Отладочный вывод для понимания структуры первого попавшегося лота
+          if not debug_printed:
+            print(f"🔍 DEBUG ЛОТ ПРЕДМЕТА [{item['name']}]: {lots[0]}")
+            debug_printed = True
+
           rarity_data = {}
           for lot in lots:
-            qlt = lot.get("qlt") if lot.get("qlt") is not None else lot.get("quality", 0)
-            rarity_name = QUALITY_MAP.get(qlt, "Обычный")
+            # Пытаемся найти поле качества в разных возможных вариациях API
+            qlt = (
+                lot.get("qlt")
+                if lot.get("qlt") is not None
+                else lot.get("quality")
+            )
+            if qlt is None and "item" in lot:
+              qlt = lot["item"].get("qlt") or lot["item"].get("quality", 0)
+            if qlt is None:
+              qlt = 0
+
+            rarity_name = QUALITY_MAP.get(int(qlt), "Обычный")
 
             price = lot.get("buyoutPrice") or lot.get("startPrice", 0)
             if price > 0:
@@ -124,7 +141,6 @@ def collect_iteration(items: list[dict]):
               if price < rarity_data[rarity_name]["min_price"]:
                 rarity_data[rarity_name]["min_price"] = price
 
-          # Записываем в базу каждый найденный вариант редкости
           for r_name, info in rarity_data.items():
             row = {
                 "item_id": item_id,
