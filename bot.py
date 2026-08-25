@@ -11,7 +11,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # Используем переменные окружения, с запасными значениями для локального запуска
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://server-auth-7cw9.onrender.com/api/login")
 
 # Остальной ваш код бота...
 
