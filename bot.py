@@ -18,6 +18,8 @@ PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
 PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
 
+ITEMS_PER_PAGE = 10  # Количество предметов на одной странице каталога
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -49,7 +51,7 @@ def get_auth_inline_menu():
 
 def get_main_inline_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📂 Каталог предметов", callback_data="menu_catalog")],
+        [InlineKeyboardButton(text="📂 Каталог предметов", callback_data="menu_catalog:0")],
         [InlineKeyboardButton(text="🎯 Настроить снайпер цен", callback_data="menu_snipers")],
         [InlineKeyboardButton(text="🛒 Купить ключ", callback_data="open_buy_menu")],
         [InlineKeyboardButton(text="🔑 Сменить ключ", callback_data="menu_change_key")],
@@ -72,7 +74,7 @@ def get_rarity_keyboard(item_id: str):
         builder.button(text=label, callback_data=f"setrarity:{item_id}:{r_val}")
     
     builder.adjust(2)
-    builder.row(InlineKeyboardButton(text="⬅️ Назад в каталог", callback_data="menu_catalog"))
+    builder.row(InlineKeyboardButton(text="⬅️ Назад в каталог", callback_data="menu_catalog:0"))
     return builder.as_markup()
 
 async def send_main_menu(message_or_callback, text_prefix=""):
@@ -202,8 +204,8 @@ async def to_main_menu_handler(callback: types.CallbackQuery, state: FSMContext)
         await send_main_menu(callback)
     await callback.answer()
 
-# --- Каталог и Выбор Предметов ---
-@dp.callback_query(F.data == "menu_catalog")
+# --- Каталог и Выбор Предметов (с Пагинацией) ---
+@dp.callback_query(F.data.startswith("menu_catalog"))
 async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
@@ -212,6 +214,10 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
     if not license_key:
         await callback.answer("⚠️ Сначала введите ключ доступа!", show_alert=True)
         return
+
+    # Парсим текущую страницу из callback_data (формат: menu_catalog:page или просто menu_catalog)
+    parts = callback.data.split(":")
+    page = int(parts[1]) if len(parts) > 1 else 0
 
     async with httpx.AsyncClient() as client:
         try:
@@ -231,15 +237,48 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         await callback.answer()
         return
 
-    builder = InlineKeyboardBuilder()
-    for item in items[:20]:
+    # 1. Фильтруем уникальные предметы по item_id
+    unique_items = []
+    seen_ids = set()
+    for item in items:
         i_id = item["item_id"]
-        name = item.get("name", i_id)
+        if i_id not in seen_ids:
+            seen_ids.add(i_id)
+            unique_items.append((i_id, item.get("name", i_id)))
+
+    # 2. Вычисляем данные для пагинации
+    total_items = len(unique_items)
+    total_pages = (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    
+    # Ограничиваем номер страницы
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    page_items = unique_items[start_idx:end_idx]
+
+    # 3. Собираем клавиатуру
+    builder = InlineKeyboardBuilder()
+    for i_id, name in page_items:
         builder.button(text=f"🔮 {name}", callback_data=f"select_item:{i_id}")
 
     builder.adjust(1)
+
+    # 4. Добавляем кнопки переключения страниц
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"menu_catalog:{page - 1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"menu_catalog:{page + 1}"))
+
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
     builder.row(InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu"))
-    await callback.message.edit_text("📂 **Выберите предмет из каталога:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+    page_text = f"📂 **Выберите предмет из каталога (Стр. {page + 1}/{total_pages}):**"
+    
+    await callback.message.edit_text(page_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("select_item:"))
@@ -287,7 +326,6 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     item_name = item_id
     min_price = 0
 
-    # Ищем цену с учетом выбранной редкости
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(
