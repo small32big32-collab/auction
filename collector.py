@@ -13,14 +13,15 @@ CLIENT_ID = "3919"
 CLIENT_SECRET = "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl"
 AUTH_URL = "https://exbo.net/oauth/token"
 
+BOT_TOKEN = "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE"
+
 FETCH_INTERVAL = 900
 
+# ИЗМЕНЕНИЕ 1: Оставляем только артефакты, убрав "armor"
 TARGET_CATEGORIES = {
     "artefact": "Артефакт",
-    "armor": "Броня",
 }
 
-# Соответствие цифрового качества EXBO текстовым редкостям
 QUALITY_MAP = {
     0: "Обычный",
     1: "Необычный",
@@ -78,6 +79,51 @@ def get_exbo_token(client: httpx.Client) -> str | None:
   return None
 
 
+def send_telegram_notification(user_id: int, text: str):
+  """Отправка уведомления пользователю в Telegram"""
+  url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+  try:
+    with httpx.Client(timeout=10.0) as client:
+      client.post(url, json={
+          "chat_id": user_id,
+          "text": text,
+          "parse_mode": "Markdown"
+      })
+  except Exception as e:
+    print(f"⚠️ Ошибка отправки уведомления в Telegram для {user_id}: {e}")
+
+
+def check_user_snipers(item_id: str, rarity_name: str, current_price: float, total_lots: int):
+  """Проверка активных снайперов в Supabase для конкретного предмета и редкости"""
+  try:
+    res = supabase.table("user_snipers").select("*").eq("item_id", item_id).eq("rarity", rarity_name).execute()
+    snipers = res.data
+    if not snipers:
+      return
+
+    for sniper in snipers:
+      threshold = float(sniper["threshold"])
+      # Если текущая цена упала до нужного порога или ниже
+      if current_price <= threshold:
+        user_id = sniper["user_id"]
+        item_name = sniper["item_name"]
+        
+        msg = (
+            f"🔥 **ВНИМАНИЕ! СНАЙПЕР СРАБОТАЛ!** 🔥\n\n"
+            f"📦 Предмет: *{item_name}* (`{rarity_name}`)\n"
+            f"📉 Текущая цена: **{current_price:,.0f} руб.** (Ваш порог: {threshold:,.0f} руб.)\n"
+            f"📊 Доступно лотов: {total_lots}\n"
+            f"🕒 Время: `{time.strftime('%Y-%m-%d %H:%M')}`"
+        )
+        
+        send_telegram_notification(user_id, msg)
+        
+        # Удаляем сработавший снайпер, чтобы не спамить повторно
+        supabase.table("user_snipers").delete().eq("id", sniper["id"]).execute()
+  except Exception as e:
+    print(f"⚠️ Ошибка проверки снайперов: {e}")
+
+
 def collect_iteration(items: list[dict]):
   if not items:
     return
@@ -89,11 +135,8 @@ def collect_iteration(items: list[dict]):
       return
 
     headers = {"Authorization": f"Bearer {token}"}
-    print(
-        f"\n--- Сбор цен по выкупу ({time.strftime('%H:%M:%S')}) ---"
-    )
+    print(f"\n--- Сбор цен по выкупу (Артефакты) [{time.strftime('%H:%M:%S')}] ---")
 
-    # Возьмем для отладки первый же предмет со списком лотов
     debug_printed = False
 
     for item in items:
@@ -113,14 +156,12 @@ def collect_iteration(items: list[dict]):
           if not lots:
             continue
 
-          # Отладочный вывод для понимания структуры первого попавшегося лота
           if not debug_printed:
             print(f"🔍 DEBUG ЛОТ ПРЕДМЕТА [{item['name']}]: {lots[0]}")
             debug_printed = True
 
           rarity_data = {}
           for lot in lots:
-            # Пытаемся найти поле качества в разных возможных вариациях API
             qlt = (
                 lot.get("qlt")
                 if lot.get("qlt") is not None
@@ -150,16 +191,19 @@ def collect_iteration(items: list[dict]):
                 "min_buyout_price": info["min_price"],
                 "total_lots": info["count"],
             }
+            # Сохраняем в историю цен Supabase
             supabase.table("price_history").insert(row).execute()
+            
             print(
                 f"[+] [{item['category']}] {item['name']} ({r_name}): выкуп"
                 f" {info['min_price']:,} руб."
             )
 
+            # ИЗМЕНЕНИЕ 2: Проверяем, не сработал ли чей-то снайпер по этому предмету
+            check_user_snipers(item_id, r_name, info["min_price"], info["count"])
+
         elif res.status_code == 429:
-          print(
-              "⚠️ Слишком много запросов (Rate Limit), ждем 5 секунд..."
-          )
+          print("⚠️ Слишком много запросов (Rate Limit), ждем 5 секунд...")
           time.sleep(5)
       except Exception as e:
         print(f"⚠️ Ошибка по предмету {item['name']} ({item_id}): {e}")
@@ -168,7 +212,7 @@ def collect_iteration(items: list[dict]):
 
 
 if __name__ == "__main__":
-  print("🔄 Загрузка локальной базы предметов (Броня и Артефакты)...")
+  print("🔄 Загрузка локальной базы предметов (Только Артефакты)...")
   cached_items = load_valuable_items()
   print(f"✅ Загружено предметов: {len(cached_items)}")
 
