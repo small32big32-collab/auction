@@ -6,42 +6,24 @@ from datetime import datetime, timezone
 from supabase import create_client, Client
 
 # Настройки окружения
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-supabase-project.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-supabase-service-role-key")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
 
 # Авторизация EXBO API
 EXBO_CLIENT_ID = os.getenv("EXBO_CLIENT_ID", "3919")
 EXBO_CLIENT_SECRET = os.getenv("EXBO_CLIENT_SECRET", "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl")
 REGION = os.getenv("STALCRAFT_REGION", "RU")
 
-# Эндпоинты EXBO API
 AUTH_URL = "https://exbo.net/oauth/token"
 BASE_API_URL = f"https://eapi.stalcraft.net/{REGION.lower()}"
 
 DB_BASE_DIR = os.getenv("DB_BASE_DIR", "/app/stalzone-database/ru/items")
 
-# Инициализация Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-COLOR_MAP = {
-    "DEFAULT": "Обычный",
-    "UNCOMMON": "Необычный",
-    "SPECIAL": "Особый",
-    "RARE": "Редкий",
-    "EXCLUSIVE": "Исключительный",
-    "LEGENDARY": "Легендарный",
-}
-
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
-
-RARITY_TO_QLT = {
-    "Обычный": 0,
-    "Необычный": 1,
-    "Особый": 2,
-    "Редкий": 3,
-    "Исключительный": 4,
-    "Легендарный": 5,
-}
+RARITY_TO_QLT = {"Обычный": 0, "Необычный": 1, "Особый": 2, "Редкий": 3, "Исключительный": 4, "Легендарный": 5}
 
 
 class ExboAuthManager:
@@ -65,10 +47,8 @@ class ExboAuthManager:
                 self.access_token = data.get("access_token")
                 print("✅ Токен EXBO успешно получен!", flush=True)
                 return True
-            else:
-                print(f"❌ Ошибка авторизации EXBO [{res.status_code}]: {res.text}", flush=True)
         except Exception as e:
-            print(f"❌ Исключение при получении токена EXBO: {e}", flush=True)
+            print(f"❌ Ошибка токена EXBO: {e}", flush=True)
         return False
 
     async def get_headers(self, client: httpx.AsyncClient) -> dict:
@@ -86,7 +66,6 @@ auth_manager = ExboAuthManager(EXBO_CLIENT_ID, EXBO_CLIENT_SECRET)
 def parse_variants(item_data: dict) -> list[str]:
     variants = []
     raw_variants = item_data.get("_variants") or item_data.get("variants") or []
-
     if isinstance(raw_variants, list) and raw_variants:
         for v in raw_variants:
             if isinstance(v, dict):
@@ -95,13 +74,10 @@ def parse_variants(item_data: dict) -> list[str]:
                     variants.append(str(level))
             elif isinstance(v, (int, str)):
                 variants.append(str(v))
-
     return variants if variants else ["0"]
 
 
 def initialize_items_database():
-    print("🚀 Старт процесса инициализации коллектора...", flush=True)
-
     if not os.path.exists(DB_BASE_DIR):
         print(f"❌ База данных не найдена по пути: {DB_BASE_DIR}", flush=True)
         return []
@@ -115,31 +91,20 @@ def initialize_items_database():
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         category = data.get("category") or data.get("type", "")
-                        
                         if not category or category in ["artefact", "artifacts", "Артефакт"] or "artefact" in root.lower():
                             raw_items.append(data)
                 except Exception as e:
-                    print(f"⚠️ Ошибка чтения файла {filename}: {e}", flush=True)
-
-    print(f"📄 Загружено исходных артефактов из JSON: {len(raw_items)}", flush=True)
+                    pass
 
     tracked_items = []
     for item in raw_items:
         item_id = item.get("id") or item.get("item_id")
         if not item_id:
             continue
-
-        if isinstance(item.get("name"), dict):
-            item_name = item.get("name", {}).get("lines", {}).get("ru", item_id)
-        else:
-            item_name = item.get("name", item_id)
-
+        item_name = item.get("name", {}).get("lines", {}).get("ru", item_id) if isinstance(item.get("name"), dict) else item.get("name", item_id)
         item_variants = parse_variants(item)
 
-        # Всегда генерируем комбинации для всех 6 редкостей каждого артефакта
-        rarities_to_apply = ALL_RARITIES
-
-        for rarity in rarities_to_apply:
+        for rarity in ALL_RARITIES:
             for variant in item_variants:
                 tracked_items.append({
                     "item_id": item_id,
@@ -148,36 +113,25 @@ def initialize_items_database():
                     "rarity": rarity,
                     "variant": variant
                 })
-
-    print(f"📌 Итого сформировано комбинаций для отслеживания: {len(tracked_items)}", flush=True)
-    print("✅ Инициализация завершена.", flush=True)
-
     return tracked_items
 
 
-async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str) -> tuple[float | None, int]:
+async def fetch_auction_price_direct(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str = "0") -> tuple[float | None, int]:
+    """Прямой запрос лотов аукциона напрямую из EXBO API."""
     url = f"{BASE_API_URL}/auction/{item_id}/lots"
-    params = {
-        "limit": 200,
-        "sort": "buyout_price",
-        "order": "asc",
-        "additional": "true"
-    }
+    params = {"limit": 200, "sort": "buyout_price", "order": "asc", "additional": "true"}
 
     try:
         headers = await auth_manager.get_headers(client)
         res = await client.get(url, params=params, headers=headers, timeout=10.0)
 
-        # Если токен истек, обновляем и повторяем запрос
         if res.status_code == 401:
-            print("🔄 Токен истек, обновляем...", flush=True)
             if await auth_manager.refresh_token(client):
                 headers = await auth_manager.get_headers(client)
                 res = await client.get(url, params=params, headers=headers, timeout=10.0)
 
         if res.status_code == 200:
-            data = res.json()
-            lots = data.get("lots", [])
+            lots = res.json().get("lots", [])
             if not lots:
                 return None, 0
 
@@ -186,13 +140,9 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
 
             for lot in lots:
                 add_data = lot.get("additional") or lot.get("info") or {}
-                
-                # Качество (редкость): qlt / quality
                 lot_qlt = add_data.get("qlt", add_data.get("quality", 0))
-                # Заточка (уровень): upg / upgrade / level
                 lot_upg = str(add_data.get("upg", add_data.get("upgrade", add_data.get("level", 0))))
 
-                # Фильтрация по точной редкости и заточке
                 if int(lot_qlt) == target_qlt and lot_upg == str(variant):
                     price = lot.get("buyoutPrice") or lot.get("buyout_price") or lot.get("startPrice")
                     if price and price > 0:
@@ -200,85 +150,104 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
 
             if buyout_prices:
                 return min(buyout_prices), len(buyout_prices)
-
-        elif res.status_code != 404:
-            print(f"⚠️ API [{item_id}] статус {res.status_code}: {res.text}", flush=True)
-
     except Exception as e:
-        print(f"⚠️ Ошибка запроса API [{item_id}]: {e}", flush=True)
+        print(f"⚠️ Ошибка прямого запроса EXBO API [{item_id}]: {e}", flush=True)
 
     return None, 0
 
 
-async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: str, variant: str, min_price: float, total_lots: int):
+async def send_telegram_notification(client: httpx.AsyncClient, user_id: int, item_name: str, rarity: str, min_price: float, threshold: float):
+    text = (
+        f"🎯 **СНАЙПЕР СРАБОТАЛ!**\n\n"
+        f"📦 Предмет: **{item_name}** (`{rarity}`)\n"
+        f"💰 Прямая цена в EXBO API: **{min_price:,.0f} руб.**\n"
+        f"🎯 Ваш порог: **{threshold:,.0f} руб.**\n\n"
+        f"⚡ Поспешите забрать лот!"
+    )
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": user_id, "text": text, "parse_mode": "Markdown"}
+    
     try:
-        payload = {
-            "item_id": item_id,
-            "item_name": item_name,
-            "rarity": rarity,
-            "category": category,
-            "variant": variant,
-            "min_buyout_price": min_price,
-            "total_lots": total_lots,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        supabase.table("price_history").insert(payload).execute()
+        await client.post(tg_url, json=payload, timeout=5.0)
+        print(f"🔔 Сообщение успешно отправлено пользователю {user_id}", flush=True)
     except Exception as e:
-        print(f"⚠️ Ошибка сохранения в Supabase [{item_name}]: {e}", flush=True)
+        print(f"⚠️ Ошибка отправки в Telegram: {e}", flush=True)
 
 
-async def run_collector_cycle(tracked_items: list[dict]):
-    now_str = datetime.now().strftime("%H:%M:%S")
-    print(f"\n--- Сбор цен по выкупу [{now_str}] ---", flush=True)
-
+async def sniper_monitoring_worker():
+    """Фоновый воркер: постоянно опрашивает EXBO API только по предметам из снайпера."""
+    print("🚀 Запущен независимый воркер снайперов (Прямой опрос EXBO API)...", flush=True)
+    
     async with httpx.AsyncClient() as client:
-        # Предварительная проверка авторизации
-        if not await auth_manager.get_headers(client):
-            print("❌ Пропуск цикла: не удалось получить токен EXBO.", flush=True)
-            return
+        while True:
+            try:
+                # Получаем активные снайперы из Supabase
+                res = supabase.table("user_snipers").select("*").execute()
+                snipers = res.data or []
 
-        for idx, item in enumerate(tracked_items):
-            item_id = item["item_id"]
-            item_name = item["item_name"]
-            rarity = item["rarity"]
-            variant = item["variant"]
+                if snipers:
+                    print(f"\n🎯 [Снайпер-Воркер] Проверка {len(snipers)} активных целей напрямую в EXBO API...", flush=True)
 
-            if idx % 50 == 0:
-                print(f"🔄 Прогресс сбора: {idx}/{len(tracked_items)} предметов обработано...", flush=True)
+                for sniper in snipers:
+                    item_id = sniper.get("item_id")
+                    rarity = sniper.get("rarity", "Обычный")
+                    threshold = float(sniper.get("threshold", 0))
+                    user_id = sniper.get("user_id")
+                    item_name = sniper.get("item_name", item_id)
 
-            min_price, total_lots = await fetch_auction_price(client, item_id, rarity, variant)
+                    # Прямой запрос к EXBO API
+                    min_price, _ = await fetch_auction_price_direct(client, item_id, rarity, variant="0")
 
-            if min_price is not None:
-                var_str = f" +{variant}" if variant != "0" else ""
-                print(f"[+] [Артефакт] {item_name}{var_str} ({rarity}): выкуп {min_price:,.0f} руб. (лотов: {total_lots})", flush=True)
-                
-                await save_to_supabase(
-                    item_id=item_id,
-                    item_name=item_name,
-                    rarity=rarity,
-                    category=item["category"],
-                    variant=variant,
-                    min_price=min_price,
-                    total_lots=total_lots
-                )
+                    if min_price is not None:
+                        print(f"🎯 [Direct EXBO] {item_name} ({rarity}): {min_price:,.0f} руб. (Порог: {threshold:,.0f} руб.)", flush=True)
+                        if min_price <= threshold and user_id:
+                            await send_telegram_notification(client, user_id, item_name, rarity, min_price, threshold)
 
-            # Ограничение частоты запросов к EXBO (Rate Limit)
-            await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.3)  # Пауза между запросами к API
+
+            except Exception as e:
+                print(f"⚠️ Ошибка в снайпер-воркере: {e}", flush=True)
+
+            # Пауза перед следующим циклом проверки снайперов (например, 10 секунд)
+            await asyncio.sleep(10)
+
+
+async def general_collector_worker(tracked_items: list[dict]):
+    """Фоновый воркер: плановый обход всей базы артефактов."""
+    async with httpx.AsyncClient() as client:
+        while True:
+            print(f"\n--- [Общий сборщик] Старт фонового прохода по базе ---", flush=True)
+            for idx, item in enumerate(tracked_items):
+                min_price, total_lots = await fetch_auction_price_direct(client, item["item_id"], item["rarity"], item["variant"])
+                if min_price is not None:
+                    try:
+                        payload = {
+                            "item_id": item["item_id"],
+                            "item_name": item["item_name"],
+                            "rarity": item["rarity"],
+                            "category": item["category"],
+                            "variant": item["variant"],
+                            "min_buyout_price": min_price,
+                            "total_lots": total_lots,
+                            "created_at": datetime.now(timezone.utc).isoformat()
+                        }
+                        supabase.table("price_history").insert(payload).execute()
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.2)
+            await asyncio.sleep(60)
 
 
 async def main():
     tracked_items = initialize_items_database()
-    if not tracked_items:
-        print("❌ Не найдено предметов для отслеживания. Завершение работы.", flush=True)
-        return
-
-    while True:
-        try:
-            await run_collector_cycle(tracked_items)
-        except Exception as e:
-            print(f"⚠️ Ошибка в главном цикле коллектора: {e}", flush=True)
-        
-        await asyncio.sleep(60)
+    
+    # Запускаем два параллельных процесса в одном event loop:
+    # 1. Быстрый снайпер-воркер (опрашивает только нужные предметы каждые 10 сек)
+    # 2. Общий сборщик историй цен
+    await asyncio.gather(
+        sniper_monitoring_worker(),
+        general_collector_worker(tracked_items)
+    )
 
 
 if __name__ == "__main__":
