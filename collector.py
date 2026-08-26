@@ -93,22 +93,16 @@ def load_valuable_items() -> list[dict]:
         return items_list
 
     print(f"✅ База данных найдена: {base_dir}")
-    
-    try:
-        subdirs = [x.name for x in base_dir.iterdir() if x.is_dir()]
-        print(f"📂 Доступные категории в папке items: {subdirs}")
-    except Exception as e:
-        print(f"⚠️ Не удалось прочитать содержимое папки: {e}")
 
     for cat_folder, cat_name in TARGET_CATEGORIES.items():
         folder_path = base_dir / cat_folder
         if not folder_path.exists():
-            print(f"⚠️ Подпапка категории '{cat_folder}' не найдена в {base_dir}")
             continue
 
         json_files = list(folder_path.rglob("*.json"))
-        print(f"📄 Найдено JSON-файлов в категории '{cat_folder}': {len(json_files)}")
+        print(f"📄 Проверяем JSON-файлы в категории '{cat_folder}': {len(json_files)}")
 
+        success_count = 0
         for path in json_files:
             if "_variants" in path.parts:
                 continue
@@ -116,21 +110,34 @@ def load_valuable_items() -> list[dict]:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    item_id = data.get("id")
-                    lines = data.get("name", {}).get("lines", {})
-                    name = lines.get("ru") or lines.get("en") or item_id
                     
+                    item_id = data.get("id") or path.stem
+                    
+                    name = None
+                    name_block = data.get("name")
+                    if isinstance(name_block, dict):
+                        lines = name_block.get("lines", {})
+                        name = lines.get("ru") or lines.get("en")
+                    elif isinstance(name_block, str):
+                        name = name_block
+                    
+                    if not name:
+                        name = item_id
+
                     default_rarity = extract_rarity_from_json(data, path)
 
-                    if item_id and name:
+                    if item_id:
                         items_list.append({
                             "id": item_id,
                             "name": name,
                             "category": cat_name,
                             "default_rarity": default_rarity
                         })
+                        success_count += 1
             except Exception:
                 continue
+        print(f"✅ Успешно обработано предметов в категории '{cat_folder}': {success_count}")
+        
     return items_list
 
 
