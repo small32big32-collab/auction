@@ -111,7 +111,7 @@ def load_valuable_items() -> list[dict]:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     
-                    item_id = data.get("id") or path.stem
+                    item_id = data.get("id") or data.get("key") or path.stem
                     
                     name = None
                     name_block = data.get("name")
@@ -126,16 +126,16 @@ def load_valuable_items() -> list[dict]:
 
                     default_rarity = extract_rarity_from_json(data, path)
 
-                    if item_id:
-                        items_list.append({
-                            "id": item_id,
-                            "name": name,
-                            "category": cat_name,
-                            "default_rarity": default_rarity
-                        })
-                        success_count += 1
-            except Exception:
+                    items_list.append({
+                        "id": item_id,
+                        "name": name,
+                        "category": cat_name,
+                        "default_rarity": default_rarity
+                    })
+                    success_count += 1
+            except Exception as e:
                 continue
+                
         print(f"✅ Успешно обработано предметов в категории '{cat_folder}': {success_count}")
         
     return items_list
