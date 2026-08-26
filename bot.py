@@ -62,27 +62,40 @@ async def show_main_menu(message_or_callback, edit=False, has_key=False):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    await show_main_menu(message, edit=False, has_key=False)
+    data = await state.get_data()
+    license_key = data.get("license_key")
+    if license_key:
+        await state.set_state(UserSession.in_menu)
+        await show_main_menu(message, edit=False, has_key=True)
+    else:
+        await state.clear()
+        await show_main_menu(message, edit=False, has_key=False)
 
 
 @dp.message(Command("key"))
 async def cmd_key(message: types.Message, state: FSMContext):
-    await state.clear()
+    data = await state.get_data()
+    license_key = data.get("license_key")
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Назад в меню", callback_data="back_to_main")
     builder.adjust(1)
     await message.answer("🔑 Введите ваш лицензионный ключ:", reply_markup=builder.as_markup())
     await state.set_state(UserSession.waiting_for_key)
+    if license_key:
+        await state.update_data(license_key=license_key)
 
 
 @dp.callback_query(F.data == "start_enter_key")
 async def process_start_enter_key(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    license_key = data.get("license_key")
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Назад в меню", callback_data="back_to_main")
     builder.adjust(1)
     await callback.message.edit_text("🔑 Введите ваш лицензионный ключ:", reply_markup=builder.as_markup())
     await state.set_state(UserSession.waiting_for_key)
+    if license_key:
+        await state.update_data(license_key=license_key)
     await callback.answer()
 
 
@@ -92,9 +105,7 @@ async def process_back_to_main(callback: types.CallbackQuery, state: FSMContext)
     license_key = data.get("license_key")
     has_key = bool(license_key)
 
-    await state.clear()
     if has_key:
-        await state.update_data(license_key=license_key)
         await state.set_state(UserSession.in_menu)
 
     try:
@@ -260,7 +271,6 @@ async def process_rarity_click(callback: types.CallbackQuery, state: FSMContext)
 
                 item_name = filtered[0].get("item_name", item_id)
                 
-                # Извлекаем последнюю зафиксированную минимальную цену и количество лотов
                 latest_record = filtered[-1]
                 min_price = latest_record.get("min_buyout_price") or latest_record.get("min_price")
                 total_lots = latest_record.get("total_lots", 0)
@@ -321,38 +331,54 @@ async def process_sniper_threshold_input(message: types.Message, state: FSMConte
         return
 
     data = await state.get_data()
-    user_id = message.from_user.id
+    telegram_id = str(message.from_user.id)
+    license_key = data.get("license_key")
+
+    payload = {
+        "telegram_id": telegram_id,
+        "user_id": telegram_id,
+        "license_key": license_key,
+        "item_id": data.get("sniper_item_id"),
+        "item_name": data.get("sniper_item_name"),
+        "rarity": data.get("sniper_rarity"),
+        "threshold": threshold
+    }
 
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(f"{API_BASE_URL}/snipers", json={
-                "user_id": user_id,
-                "license_key": data.get("license_key"),
-                "item_id": data.get("sniper_item_id"),
-                "item_name": data.get("sniper_item_name"),
-                "rarity": data.get("sniper_rarity"),
-                "threshold": threshold
-            })
+            res = await client.post(f"{API_BASE_URL}/snipers", json=payload)
+            print(f"Ответ API сохранения снайпера: {res.status_code} {res.text}")
         except Exception as e:
             print(f"Ошибка сохранения снайпера в БД: {e}")
 
     await state.set_state(UserSession.in_menu)
+    await state.update_data(
+        license_key=license_key,
+        sniper_item_id=None,
+        sniper_item_name=None,
+        sniper_rarity=None
+    )
+
     builder = InlineKeyboardBuilder()
     builder.button(text="📂 В каталог", callback_data="back_to_cats")
     builder.button(text="🏠 Главное меню", callback_data="back_to_main")
     builder.adjust(1)
 
-    await message.answer(f"✅ **Снайпер успешно активирован в базе данных!**\nЦелевая цена: **{threshold:,.0f} руб.**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await message.answer(f"✅ **Снайпер привязан к Telegram ID ({telegram_id})!**\nЦелевая цена: **{threshold:,.0f} руб.**", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 
 @dp.callback_query(F.data == "sniper_menu")
 async def process_sniper_menu(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
+    telegram_id = str(callback.from_user.id)
     builder = InlineKeyboardBuilder()
     
     async with httpx.AsyncClient() as client:
-        res = await client.get(f"{API_BASE_URL}/snipers/{user_id}")
-        snipers = res.json().get("data", []) if res.status_code == 200 else []
+        try:
+            res = await client.get(f"{API_BASE_URL}/snipers/{telegram_id}")
+            snipers = res.json().get("data", []) if res.status_code == 200 else []
+        except Exception as e:
+            print(f"Ошибка получения списка снайперов: {e}")
+            snipers = []
 
     if snipers:
         text = "🎯 **Ваши активные снайперы:**\n\n"
@@ -370,9 +396,12 @@ async def process_sniper_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "cancel_sniper")
 async def process_cancel_sniper(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
+    telegram_id = str(callback.from_user.id)
     async with httpx.AsyncClient() as client:
-        await client.delete(f"{API_BASE_URL}/snipers/{user_id}")
+        try:
+            await client.delete(f"{API_BASE_URL}/snipers/{telegram_id}")
+        except Exception as e:
+            print(f"Ошибка удаления снайперов: {e}")
     
     await callback.message.edit_text("❌ Все снайперы удалены.")
     data = await state.get_data()
