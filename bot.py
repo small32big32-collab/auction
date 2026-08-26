@@ -12,15 +12,15 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 
-# Ссылки для нижних inline-кнопок (замените на свои при необходимости)
+# Ссылки на внешние ресурсы
 SUPPORT_URL = "https://t.me/your_support_username"
+BUY_KEY_URL = "https://t.me/your_bot_or_shop"
 TERMS_URL = "https://example.com/terms"
 PRIVACY_URL = "https://example.com/privacy"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- FSM Состояния ---
 class AuthState(StatesGroup):
     waiting_for_key = State()
 
@@ -30,17 +30,26 @@ class SniperState(StatesGroup):
 
 user_sessions = {}
 
-# --- Генерация оригинального Inline-меню со скриншота ---
+# --- Клавиатура при входе (до ввода ключа) ---
+def get_auth_inline_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Купить ключ", url=BUY_KEY_URL)],
+        [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_URL)],
+        [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
+        [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
+    ])
+
+# --- Главное Inline-меню (после ввода ключа) ---
 def get_main_inline_menu():
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📂 Каталог предметов", callback_data="menu_catalog")],
         [InlineKeyboardButton(text="🎯 Настроить снайпер цен", callback_data="menu_snipers")],
+        [InlineKeyboardButton(text="🛒 Купить ключ", url=BUY_KEY_URL)],
         [InlineKeyboardButton(text="🔑 Сменить ключ", callback_data="menu_change_key")],
         [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_URL)],
         [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
         [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
     ])
-    return keyboard
 
 async def send_main_menu(message_or_callback, text_prefix=""):
     text = (
@@ -56,7 +65,7 @@ async def send_main_menu(message_or_callback, text_prefix=""):
     else:
         await message_or_callback.answer(text, reply_markup=markup, parse_mode="Markdown")
 
-# --- Старт и Авторизация ---
+# --- Старт ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -65,8 +74,15 @@ async def start_cmd(message: types.Message, state: FSMContext):
         return
 
     await state.set_state(AuthState.waiting_for_key)
-    await message.answer("🔑 **Авторизация в Stalzone**\n\nПожалуйста, введите ваш ключ доступа:", parse_mode="Markdown")
+    await message.answer(
+        "🔑 **Авторизация в Stalzone**\n\n"
+        "Пожалуйста, введите ваш ключ доступа.\n"
+        "Если у вас нет ключа, вы можете приобрести его по кнопке ниже:",
+        reply_markup=get_auth_inline_menu(),
+        parse_mode="Markdown"
+    )
 
+# --- Авторизация ---
 @dp.message(AuthState.waiting_for_key)
 async def process_license_key(message: types.Message, state: FSMContext):
     license_key = message.text.strip()
@@ -80,7 +96,10 @@ async def process_license_key(message: types.Message, state: FSMContext):
                 await state.clear()
                 await send_main_menu(message, text_prefix="✅ **Авторизация успешна!**\n\n")
             else:
-                await message.answer("❌ **Неверный или просроченный ключ.** Попробуйте ввести другой:")
+                await message.answer(
+                    "❌ **Неверный или просроченный ключ.** Попробуйте ввести другой или купите новый:",
+                    reply_markup=get_auth_inline_menu()
+                )
         except Exception as e:
             await message.answer(f"⚠️ Ошибка подключения к серверу: {e}")
 
@@ -89,10 +108,14 @@ async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     user_sessions.pop(user_id, None)
     await state.set_state(AuthState.waiting_for_key)
-    await callback.message.answer("🔑 Введите новый ключ доступа:", parse_mode="Markdown")
+    await callback.message.answer(
+        "🔑 Введите новый ключ доступа:",
+        reply_markup=get_auth_inline_menu(),
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
-# --- Обработка Каталога ---
+# --- Каталог ---
 @dp.callback_query(F.data == "menu_catalog")
 async def show_catalog_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -175,7 +198,7 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# --- Снайперы с Редактированием и Удалением ---
+# --- Снайперы ---
 @dp.callback_query(F.data == "menu_snipers")
 async def show_user_snipers_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
