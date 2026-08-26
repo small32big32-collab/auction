@@ -1,338 +1,168 @@
-from datetime import datetime, timezone
+import os
 import json
-from pathlib import Path
-import time
+import asyncio
 import httpx
-from supabase import create_client
+from datetime import datetime
+from supabase import create_client, Client
 
-SUPABASE_URL = "https://mdursbqpogprwzbhjzxz.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo"
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Конфигурация окружения
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-supabase-project.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-supabase-service-role-key")
+STALZONE_AUCTION_API = os.getenv("STALZONE_AUCTION_API", "https://api.stalzone.ru/auction")
+DB_BASE_DIR = os.getenv("DB_BASE_DIR", "/app/stalzone-database/ru/items")
 
-CLIENT_ID = "3919"
-CLIENT_SECRET = "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl"
-AUTH_URL = "https://exbo.net/oauth/token"
+# Инициализация Supabase
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-BOT_TOKEN = "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE"
-
-FETCH_INTERVAL = 900
-
-TARGET_CATEGORIES = {
-    "artefact": "Артефакт",
-}
-
-QUALITY_MAP = {
-    0: "Обычный",
-    1: "Необычный",
-    2: "Особый",
-    3: "Редкий",
-    4: "Исключительный",
-    5: "Легендарный",
-}
-
-KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
+# Все 6 градаций редкости артефактов
+ALL_RARITIES = [
+    "Обычный",
+    "Необычный",
+    "Особый",
+    "Редкий",
+    "Исключительный",
+    "Легендарный"
+]
 
 
-def extract_rarity_from_json(data: dict, file_path: Path) -> str:
-    """Точное определение редкости предмета из JSON базы данных STALCRAFT"""
+def initialize_items_database():
+    """Загружает артефакты из JSON и формирует список для отслеживания всех 6 редкостей."""
+    print("🚀 Старт процесса инициализации коллектора...")
+    print(f"🔍 Рабочая директория: {os.getcwd()}")
+    print(f"🔍 Директория файла: {os.path.dirname(os.path.abspath(__file__))}")
+
+    if not os.path.exists(DB_BASE_DIR):
+        print(f"❌ База данных не найдена по пути: {DB_BASE_DIR}")
+        return []
+
+    print(f"✅ База данных найдена: {DB_BASE_DIR}")
+
+    artefacts_dir = os.path.join(DB_BASE_DIR, "artefact")
+    if not os.path.exists(artefacts_dir):
+        artefacts_dir = DB_BASE_DIR
+
+    json_files = [f for f in os.listdir(artefacts_dir) if f.endswith(".json")]
+    print(f"📄 Найдено основных JSON-файлов предметов в категории 'artefact': {len(json_files)}")
+
+    raw_items = []
+    for filename in json_files:
+        filepath = os.path.join(artefacts_dir, filename)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                raw_items.append(data)
+        except Exception as e:
+            print(f"⚠️ Ошибка чтения файла {filename}: {e}")
+
+    print(f"Успешно загружено предметов в категории 'artefact': {len(raw_items)}")
+
+    tracked_items = []
+    rarity_stats = {r: 0 for r in ALL_RARITIES}
+
+    for item in raw_items:
+        item_id = item.get("id") or item.get("item_id")
+        item_name = item.get("name", {}).get("lines", {}).get("ru") if isinstance(item.get("name"), dict) else item.get("name", item_id)
+
+        if not item_id:
+            continue
+
+        for rarity in ALL_RARITIES:
+            tracked_items.append({
+                "item_id": item_id,
+                "item_name": item_name,
+                "category": "artefact",
+                "rarity": rarity
+            })
+            rarity_stats[rarity] += 1
+
+    print(f"📊 Распределение редкостей в БД: {rarity_stats}")
+    print(f"📌 Итого сформировано элементов в списке: {len(tracked_items)}")
+    print(f"✅ Инициализация завершена. Загружено предметов: {len(tracked_items)}")
+
+    return tracked_items
+
+
+async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: str) -> tuple[float | None, int]:
+    """Запрашивает минимальную цену выкупа и количество лотов из API аукциона."""
     try:
-        json_str = json.dumps(data, ensure_ascii=False)
+        url = f"{STALZONE_AUCTION_API}/{item_id}"
+        params = {"rarity": rarity}
+        res = await client.get(url, params=params, timeout=10.0)
 
-        # 1. Поиск прямых указаний редкости в тексте JSON (от высших к низшим)
-        non_common_rarities = ["Легендарный", "Исключительный", "Редкий", "Особый", "Необычный"]
-        for rarity in non_common_rarities:
-            if f'"{rarity}"' in json_str or f' {rarity}' in json_str or f'{rarity} ' in json_str:
-                return rarity
+        if res.status_code == 200:
+            data = res.json()
+            lots = data.get("lots", [])
+            if not lots:
+                return None, 0
 
-        # 2. Проверка по цветовым HEX-кодам и идентификаторам качества EXBO DB
-        color = str(data.get("color", "")).upper()
-        if "20AF32" in color or "17B036" in color or "UNCOMMON" in color:
-            return "Необычный"
-        if "0E87EB" in color or "2196F3" in color or "SPECIAL" in color:
-            return "Особый"
-        if "B026FF" in color or "A335EE" in color or "RARE" in color:
-            return "Редкий"
-        if "FF8000" in color or "FF6000" in color or "EXCEPTIONAL" in color:
-            return "Исключительный"
-        if "E02020" in color or "FF3838" in color or "LEGENDARY" in color:
-            return "Легендарный"
-
-        # 3. Проверка пути файла
-        path_str = str(file_path).lower()
-        if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
-        if "special" in path_str or "особ" in path_str: return "Особый"
-        if "rare" in path_str or "редк" in path_str: return "Редкий"
-        if "exceptional" in path_str or "исключ" in path_str: return "Исключительный"
-        if "legendary" in path_str or "легенд" in path_str: return "Легендарный"
+            buyout_prices = [lot.get("buyout_price") or lot.get("price") for lot in lots if lot.get("buyout_price") or lot.get("price")]
+            if buyout_prices:
+                return min(buyout_prices), len(lots)
 
     except Exception:
         pass
 
-    return "Обычный"
+    return None, 0
 
 
-def extract_lot_rarity(lot: dict, default_rarity: str = "Обычный") -> str:
-    """Извлечение редкости из лота (если в лоте переданы параметры качества)"""
-    if not isinstance(lot, dict):
-        return default_rarity
-
-    additional = lot.get("additional")
-    if isinstance(additional, str):
-        try:
-            additional = json.loads(additional)
-        except Exception:
-            additional = None
-
-    dicts_to_search = []
-    if isinstance(additional, dict):
-        dicts_to_search.append(additional)
-    dicts_to_search.append(lot)
-
-    target_keys = ["qlt", "quality", "rarity", "tier"]
-    for d in dicts_to_search:
-        for k in target_keys:
-            if k in d and d[k] is not None:
-                val = d[k]
-                try:
-                    v_int = int(val)
-                    if v_int in QUALITY_MAP:
-                        return QUALITY_MAP[v_int]
-                except (ValueError, TypeError):
-                    pass
-
-                v_str = str(val).strip()
-                if v_str in KNOWN_RARITIES:
-                    return v_str
-
-    return default_rarity
-
-
-def load_valuable_items() -> list[dict]:
-    print(f"🔍 Рабочая директория: {Path.cwd()}")
-    print(f"🔍 Директория файла: {Path(__file__).parent}")
-
-    possible_paths = [
-        Path("/app/stalzone-database/ru/items"),
-        Path("/app/auction/stalzone-database/ru/items"),
-        Path(__file__).parent / "stalzone-database" / "ru" / "items",
-        Path(__file__).parent / "auction" / "stalzone-database" / "ru" / "items",
-        Path.cwd() / "stalzone-database" / "ru" / "items",
-        Path.cwd() / "auction" / "stalzone-database" / "ru" / "items",
-        Path.cwd().parent / "stalzone-database" / "ru" / "items",
-    ]
-
-    base_dir = None
-    for p in possible_paths:
-        if p.exists():
-            base_dir = p
-            break
-
-    items_list = []
-    if not base_dir:
-        print("⚠️ ОШИБКА: Папка 'stalzone-database' не найдена ни по одному из путей!")
-        return items_list
-
-    print(f"✅ База данных найдена: {base_dir}")
-
-    for cat_folder, cat_name in TARGET_CATEGORIES.items():
-        folder_path = base_dir / cat_folder
-        if not folder_path.exists():
-            continue
-
-        subfolders = [x for x in folder_path.iterdir() if x.is_dir()]
-
-        json_files = []
-        for sub in subfolders:
-            if sub.name == "_variants":
-                continue
-            for file_path in sub.glob("*.json"):
-                json_files.append(file_path)
-
-        print(f"📄 Найдено основных JSON-файлов предметов в категории '{cat_folder}': {len(json_files)}")
-
-        success_count = 0
-        rarity_counts = {}
-        for path in json_files:
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                    if not isinstance(data, dict):
-                        continue
-
-                    item_id = path.stem
-
-                    name = None
-                    name_block = data.get("name")
-                    if isinstance(name_block, dict):
-                        lines = name_block.get("lines")
-                        if isinstance(lines, dict):
-                            name = lines.get("ru") or lines.get("en")
-                    elif isinstance(name_block, str):
-                        name = name_block
-
-                    if not name:
-                        name = item_id
-
-                    default_rarity = extract_rarity_from_json(data, path)
-                    rarity_counts[default_rarity] = rarity_counts.get(default_rarity, 0) + 1
-
-                    items_list.append({
-                        "id": item_id,
-                        "name": name,
-                        "category": cat_name,
-                        "default_rarity": default_rarity
-                    })
-                    success_count += 1
-            except Exception as e:
-                print(f"⚠️ Ошибка чтения {path.name}: {e}")
-                continue
-
-        print(f"✅ Успешно загружено предметов в категории '{cat_folder}': {success_count}")
-        print(f"📊 Распределение редкостей в БД: {rarity_counts}")
-
-    print(f"📦 Итого сформировано элементов в списке: {len(items_list)}")
-    return items_list
-
-
-def get_exbo_token(client: httpx.Client) -> str | None:
-    for _ in range(3):
-        try:
-            auth_res = client.post(
-                AUTH_URL,
-                data={
-                    "client_id": CLIENT_ID,
-                    "client_secret": CLIENT_SECRET,
-                    "grant_type": "client_credentials",
-                },
-                timeout=10.0,
-            )
-            if auth_res.status_code == 200:
-                return auth_res.json().get("access_token")
-        except Exception:
-            time.sleep(2)
-    return None
-
-
-def send_telegram_notification(user_id: int, text: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: str, min_price: float, total_lots: int):
+    """Записывает точечный снимок цен в таблицу price_history."""
     try:
-        with httpx.Client(timeout=10.0) as client:
-            client.post(url, json={
-                "chat_id": user_id,
-                "text": text,
-                "parse_mode": "Markdown"
-            })
+        payload = {
+            "item_id": item_id,
+            "item_name": item_name,
+            "rarity": rarity,
+            "category": category,
+            "min_buyout_price": min_price,
+            "total_lots": total_lots,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        supabase.table("price_history").insert(payload).execute()
     except Exception as e:
-        print(f"⚠️ Ошибка отправки уведомления в Telegram для {user_id}: {e}")
+        print(f"⚠️ Ошибка сохранения в Supabase [{item_name} - {rarity}]: {e}")
 
 
-def check_user_snipers(item_id: str, rarity_name: str, current_price: float, total_lots: int):
-    try:
-        res = supabase.table("user_snipers").select("*").eq("item_id", item_id).eq("rarity", rarity_name).execute()
-        snipers = res.data
-        if not snipers:
-            return
+async def run_collector_cycle(tracked_items: list[dict]):
+    """Запускает один полный круг парсинга по всем предметам и редкостям."""
+    now_str = datetime.now().strftime("%H:%M:%S")
+    print(f"\n--- Сбор цен по выкупу (Артефакты) [{now_str}] ---")
 
-        for sniper in snipers:
-            threshold = float(sniper["threshold"])
-            if current_price <= threshold:
-                user_id = sniper["user_id"]
-                item_name = sniper["item_name"]
+    async with httpx.AsyncClient() as client:
+        for item in tracked_items:
+            item_id = item["item_id"]
+            item_name = item["item_name"]
+            rarity = item["rarity"]
 
-                msg = (
-                    f"🔥 **ВНИМАНИЕ! СНАЙПЕР СРАБОТАЛ!** 🔥\n\n"
-                    f"📦 Предмет: *{item_name}* (`{rarity_name}`)\n"
-                    f"📉 Текущая цена: **{current_price:,.0f} руб.** (Ваш порог: {threshold:,.0f} руб.)\n"
-                    f"📊 Доступно лотов: {total_lots}\n"
-                    f"🕒 Время: `{time.strftime('%Y-%m-%d %H:%M')}`"
+            min_price, total_lots = await fetch_auction_price(client, item_id, rarity)
+
+            if min_price is not None:
+                print(f"[+] [Артефакт] {item_name} ({rarity}): выкуп {min_price:,.0f} руб. (лотов: {total_lots})")
+                await save_to_supabase(
+                    item_id=item_id,
+                    item_name=item_name,
+                    rarity=rarity,
+                    category=item["category"],
+                    min_price=min_price,
+                    total_lots=total_lots
                 )
 
-                send_telegram_notification(user_id, msg)
-                supabase.table("user_snipers").delete().eq("id", sniper["id"]).execute()
-    except Exception as e:
-        print(f"⚠️ Ошибка проверки снайперов: {e}")
+            await asyncio.sleep(0.1)
 
 
-def collect_iteration(items: list[dict]):
-    if not items:
+async def main():
+    tracked_items = initialize_items_database()
+    if not tracked_items:
+        print("❌ Не найдено предметов для отслеживания. Завершение работы.")
         return
-
-    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-        token = get_exbo_token(client)
-        if not token:
-            print("⚠️ Не удалось получить OAuth-токен, пропускаем итерацию.")
-            return
-
-        headers = {"Authorization": f"Bearer {token}"}
-        print(f"\n--- Сбор цен по выкупу (Артефакты) [{time.strftime('%H:%M:%S')}] ---")
-
-        for item in items:
-            item_id = item["id"]
-            try:
-                auction_url = f"https://eapi.stalzone.com/ru/auction/{item_id}/lots"
-                res = client.get(
-                    auction_url,
-                    headers=headers,
-                    params={"limit": 50, "sort": "buyout_price", "order": "asc"},
-                )
-
-                if res.status_code == 200:
-                    data = res.json()
-                    lots = data.get("lots", [])
-
-                    if not lots:
-                        continue
-
-                    rarity_data = {}
-                    for lot in lots:
-                        rarity_name = extract_lot_rarity(lot, item.get("default_rarity", "Обычный"))
-
-                        price = lot.get("buyoutPrice") or lot.get("startPrice", 0)
-                        if price > 0:
-                            if rarity_name not in rarity_data:
-                                rarity_data[rarity_name] = {"min_price": price, "count": 0}
-                            rarity_data[rarity_name]["count"] += 1
-                            if price < rarity_data[rarity_name]["min_price"]:
-                                rarity_data[rarity_name]["min_price"] = price
-
-                    for r_name, info in rarity_data.items():
-                        row = {
-                            "item_id": item_id,
-                            "item_name": item["name"],
-                            "rarity": r_name,
-                            "category": item["category"],
-                            "min_buyout_price": info["min_price"],
-                            "total_lots": info["count"],
-                        }
-                        supabase.table("price_history").insert(row).execute()
-
-                        print(
-                            f"[+] [{item['category']}] {item['name']} ({r_name}): выкуп"
-                            f" {info['min_price']:,} руб."
-                        )
-
-                        check_user_snipers(item_id, r_name, info["min_price"], info["count"])
-
-                elif res.status_code == 429:
-                    print("⚠️ Слишком много запросов (Rate Limit), ждем 5 секунд...")
-                    time.sleep(5)
-            except Exception as e:
-                print(f"⚠️ Ошибка по предмету {item['name']} ({item_id}): {e}")
-
-            time.sleep(0.3)
-
-
-if __name__ == "__main__":
-    print("🔄 Старт процесса инициализации коллектора...")
-    cached_items = load_valuable_items()
-    print(f"✅ Инициализация завершена. Загружено предметов: {len(cached_items)}")
 
     while True:
         try:
-            collect_iteration(cached_items)
+            await run_collector_cycle(tracked_items)
         except Exception as e:
-            print(f"⚠️ Ошибка в итерации сбора: {e}")
+            print(f"⚠️ Ошибка в главном цикле коллектора: {e}")
+        
+        await asyncio.sleep(60)
 
-        print(f"💤 Ожидание следующего сбора ({FETCH_INTERVAL // 60} минут)...")
-        time.sleep(FETCH_INTERVAL)
+
+if __name__ == "__main__":
+    asyncio.run(main())
