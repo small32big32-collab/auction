@@ -35,25 +35,21 @@ KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Ре�
 
 def extract_rarity_from_json(data: dict, file_path: Path) -> str:
     """Точное извлечение редкости артефакта из структуры JSON или имени файла"""
-    # 1. Поиск по infoBlocks (ключи и значения качества EXBO)
     info_blocks = data.get("infoBlocks", [])
     for block in info_blocks:
         elements = block.get("elements", [])
         for el in elements:
-            # Проверяем ключ
             key_dict = el.get("key", {})
             if "quality" in key_dict.get("key", "") or "rarity" in key_dict.get("key", ""):
                 ru_text = key_dict.get("lines", {}).get("ru", "")
                 if ru_text in KNOWN_RARITIES:
                     return ru_text
             
-            # Проверяем значение
             val_dict = el.get("value", {})
             ru_val = val_dict.get("lines", {}).get("ru", "")
             if ru_val in KNOWN_RARITIES:
                 return ru_val
 
-    # 2. Поиск по системному полю color
     color = data.get("color", "").upper()
     if "UNCOMMON" in color: return "Необычный"
     if "SPECIAL" in color: return "Особый"
@@ -61,7 +57,6 @@ def extract_rarity_from_json(data: dict, file_path: Path) -> str:
     if "EXCEPTIONAL" in color: return "Исключительный"
     if "LEGENDARY" in color: return "Легендарный"
 
-    # 3. Анализ названия файла или родительских папок на наличие грейда
     path_str = str(file_path).lower()
     if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
     if "special" in path_str or "особ" in path_str: return "Особый"
@@ -73,13 +68,20 @@ def extract_rarity_from_json(data: dict, file_path: Path) -> str:
 
 
 def load_valuable_items() -> list[dict]:
-    # Универсальный поиск папки базы данных в проекте
+    # Учитываем возможные варианты расположения папки аукциона/репозитория
     possible_paths = [
+        Path("/app/auction/stalzone-database/ru/items"),
+        Path("/app/stalzone-database/ru/items"),
         Path(__file__).parent / "stalzone-database" / "ru" / "items",
+        Path(__file__).parent / "auction" / "stalzone-database" / "ru" / "items",
         Path.cwd() / "stalzone-database" / "ru" / "items",
+        Path.cwd() / "auction" / "stalzone-database" / "ru" / "items",
         Path.cwd().parent / "stalzone-database" / "ru" / "items",
     ]
     
+    print(f"🔍 Рабочая директория: {Path.cwd()}")
+    print(f"🔍 Директория файла: {Path(__file__).parent}")
+
     base_dir = None
     for p in possible_paths:
         if p.exists():
@@ -88,15 +90,23 @@ def load_valuable_items() -> list[dict]:
 
     items_list = []
     if not base_dir:
-        print("⚠️ Предупреждение: папка 'stalzone-database' не найдена!")
+        print("⚠️ ОШИБКА: Папка 'stalzone-database' не найдена ни по одному из путей!")
         return items_list
+
+    print(f"✅ База данных найдена: {base_dir}")
 
     for cat_folder, cat_name in TARGET_CATEGORIES.items():
         folder_path = base_dir / cat_folder
         if not folder_path.exists():
+            print(f"⚠️ Подпапка {cat_folder} не найдена в {base_dir}")
             continue
 
+        # rglob автоматически пройдет по всем вложенным папкам (например, biochemical и др.)
         for path in folder_path.rglob("*.json"):
+            # Игнорируем технические папки вроде _variants
+            if "_variants" in path.parts:
+                continue
+                
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -138,7 +148,6 @@ def get_exbo_token(client: httpx.Client) -> str | None:
 
 
 def send_telegram_notification(user_id: int, text: str):
-    """Отправка уведомления пользователю в Telegram"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -152,7 +161,6 @@ def send_telegram_notification(user_id: int, text: str):
 
 
 def check_user_snipers(item_id: str, rarity_name: str, current_price: float, total_lots: int):
-    """Проверка активных снайперов в Supabase для конкретного предмета и редкости"""
     try:
         res = supabase.table("user_snipers").select("*").eq("item_id", item_id).eq("rarity", rarity_name).execute()
         snipers = res.data
