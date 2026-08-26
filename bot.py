@@ -1,4 +1,3 @@
-[source: 4]
 import os
 import asyncio
 import uuid
