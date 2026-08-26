@@ -14,7 +14,7 @@ DB_BASE_DIR = os.getenv("DB_BASE_DIR", "/app/stalzone-database/ru/items")
 # Инициализация Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Маппинг значения поля "color" из JSON в русское название редкости
+# Маппинг цветов из JSON в русские названия редкостей
 COLOR_MAP = {
     "DEFAULT": "Обычный",
     "UNCOMMON": "Необычный",
@@ -22,24 +22,33 @@ COLOR_MAP = {
     "RARE": "Редкий",
     "EXCLUSIVE": "Исключительный",
     "LEGENDARY": "Легендарный",
-    # Запасные значения, если в JSON используются названия цветов
-    "WHITE": "Обычный",
-    "GREEN": "Необычный",
-    "BLUE": "Особый",
-    "PURPLE": "Редкий",
-    "PINK": "Исключительный",
-    "MAGENTA": "Исключительный",
-    "RED": "Легендарный",
 }
 
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
 
+def parse_variants(item_data: dict) -> list[str]:
+    """Извлекает уровни заточки/варианты из поля _variants."""
+    variants = []
+    raw_variants = item_data.get("_variants") or item_data.get("variants") or []
+
+    if isinstance(raw_variants, list) and raw_variants:
+        for v in raw_variants:
+            if isinstance(v, dict):
+                level = v.get("level") or v.get("upgrade") or v.get("id")
+                if level is not None:
+                    variants.append(str(level))
+            elif isinstance(v, (int, str)):
+                variants.append(str(v))
+
+    # Если варианты отсутствуют, ставим базовую заточку '0'
+    return variants if variants else ["0"]
+
+
 def initialize_items_database():
-    """Сканирует JSON-файлы предметов и определяет их редкость по полю 'color'."""
+    """Сканирует JSON-файлы, связывает редкости и уровни заточек."""
     print("🚀 Старт процесса инициализации коллектора...")
     print(f"🔍 Рабочая директория: {os.getcwd()}")
-    print(f"🔍 Директория файла: {os.path.dirname(os.path.abspath(__file__))}")
 
     if not os.path.exists(DB_BASE_DIR):
         print(f"❌ База данных не найдена по пути: {DB_BASE_DIR}")
@@ -62,58 +71,54 @@ def initialize_items_database():
                 except Exception as e:
                     print(f"⚠️ Ошибка чтения файла {filename}: {e}")
 
-    print(f"📄 Загружено артефактов из JSON: {len(raw_items)}")
+    print(f"📄 Загружено исходных артефактов из JSON: {len(raw_items)}")
 
     tracked_items = []
-    rarity_stats = {r: 0 for r in ALL_RARITIES}
 
     for item in raw_items:
         item_id = item.get("id") or item.get("item_id")
         if not item_id:
             continue
 
-        # Локализованное название предмета
+        # Получение локализованного названия
         if isinstance(item.get("name"), dict):
             item_name = item.get("name", {}).get("lines", {}).get("ru", item_id)
         else:
             item_name = item.get("name", item_id)
 
-        # Определение редкости по полю "color"
+        # Извлечение заточек (_variants)
+        item_variants = parse_variants(item)
+
+        # Определение редкости по color
         raw_color = str(item.get("color", "")).upper()
         detected_rarity = COLOR_MAP.get(raw_color)
+        rarities_to_apply = [detected_rarity] if detected_rarity else ALL_RARITIES
 
-        if detected_rarity:
-            # Если поле color явно задает конкретную редкость
-            tracked_items.append({
-                "item_id": item_id,
-                "item_name": item_name,
-                "category": "artefact",
-                "rarity": detected_rarity
-            })
-            rarity_stats[detected_rarity] += 1
-        else:
-            # Если у предмета нет цвета (DEFAULT) или он выбивается во всех редкостях
-            for rarity in ALL_RARITIES:
+        # Формирование всех пар (Редкость × Заточка)
+        for rarity in rarities_to_apply:
+            for variant in item_variants:
                 tracked_items.append({
                     "item_id": item_id,
                     "item_name": item_name,
-                    "category": "artefact",
-                    "rarity": rarity
+                    "category": "Артефакт",
+                    "rarity": rarity,
+                    "variant": variant
                 })
-                rarity_stats[rarity] += 1
 
-    print(f"📊 Распределение редкостей в БД: {rarity_stats}")
-    print(f"📌 Итого сформировано элементов в списке: {len(tracked_items)}")
-    print(f"✅ Инициализация завершена. Загружено предметов: {len(tracked_items)}")
+    print(f"📌 Итого сформировано комбинаций для отслеживания: {len(tracked_items)}")
+    print("✅ Инициализация завершена.")
 
     return tracked_items
 
 
-async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: str) -> tuple[float | None, int]:
-    """Запрашивает минимальную цену выкупа и количество лотов из API аукциона."""
+async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str) -> tuple[float | None, int]:
+    """Запрашивает минимальную цену выкупа с учетом редкости и заточки."""
     try:
         url = f"{STALZONE_AUCTION_API}/{item_id}"
-        params = {"rarity": rarity}
+        params = {
+            "rarity": rarity,
+            "variant": variant
+        }
         res = await client.get(url, params=params, timeout=10.0)
 
         if res.status_code == 200:
@@ -135,43 +140,48 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
     return None, 0
 
 
-async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: str, min_price: float, total_lots: int):
-    """Записывает снимок цен в таблицу price_history."""
+async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: str, variant: str, min_price: float, total_lots: int):
+    """Записывает точечный снимок цен в таблицу price_history."""
     try:
         payload = {
             "item_id": item_id,
             "item_name": item_name,
             "rarity": rarity,
             "category": category,
+            "variant": variant,
             "min_buyout_price": min_price,
             "total_lots": total_lots,
             "created_at": datetime.utcnow().isoformat()
         }
         supabase.table("price_history").insert(payload).execute()
     except Exception as e:
-        print(f"⚠️ Ошибка сохранения в Supabase [{item_name} - {rarity}]: {e}")
+        print(f"⚠️ Ошибка сохранения в Supabase [{item_name} - {rarity} +{variant}]: {e}")
 
 
 async def run_collector_cycle(tracked_items: list[dict]):
-    """Запускает один круг сбора по всем предметам."""
+    """Запускает один полный круг опроса аукциона."""
     now_str = datetime.now().strftime("%H:%M:%S")
-    print(f"\n--- Сбор цен по выкупу (Артефакты) [{now_str}] ---")
+    print(f"\n--- Сбор цен по выкупу [{now_str}] ---")
 
     async with httpx.AsyncClient() as client:
         for item in tracked_items:
             item_id = item["item_id"]
             item_name = item["item_name"]
             rarity = item["rarity"]
+            variant = item["variant"]
 
-            min_price, total_lots = await fetch_auction_price(client, item_id, rarity)
+            min_price, total_lots = await fetch_auction_price(client, item_id, rarity, variant)
 
             if min_price is not None:
-                print(f"[+] [Артефакт] {item_name} ({rarity}): выкуп {min_price:,.0f} руб. (лотов: {total_lots})")
+                var_str = f" +{variant}" if variant != "0" else ""
+                print(f"[+] [Артефакт] {item_name}{var_str} ({rarity}): выкуп {min_price:,.0f} руб. (лотов: {total_lots})")
+                
                 await save_to_supabase(
                     item_id=item_id,
                     item_name=item_name,
                     rarity=rarity,
                     category=item["category"],
+                    variant=variant,
                     min_price=min_price,
                     total_lots=total_lots
                 )
