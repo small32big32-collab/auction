@@ -2,19 +2,27 @@ import os
 import json
 import asyncio
 import httpx
-from datetime import datetime
+from datetime import datetime, timezone
 from supabase import create_client, Client
 
-# Конфигурация окружения
+# Настройки окружения
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-supabase-project.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-supabase-service-role-key")
-STALZONE_AUCTION_API = os.getenv("STALZONE_AUCTION_API", "https://api.stalzone.ru/auction")
+
+# Авторизация EXBO API
+EXBO_CLIENT_ID = os.getenv("EXBO_CLIENT_ID", "3919")
+EXBO_CLIENT_SECRET = os.getenv("EXBO_CLIENT_SECRET", "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl")
+REGION = os.getenv("STALCRAFT_REGION", "RU")
+
+# Эндпоинты EXBO API
+AUTH_URL = "https://exbo.net/oauth/token"
+BASE_API_URL = f"https://eapi.stalcraft.net/{REGION.lower()}"
+
 DB_BASE_DIR = os.getenv("DB_BASE_DIR", "/app/stalzone-database/ru/items")
 
 # Инициализация Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Маппинг цветов из JSON в русские названия редкостей
 COLOR_MAP = {
     "DEFAULT": "Обычный",
     "UNCOMMON": "Необычный",
@@ -27,8 +35,46 @@ COLOR_MAP = {
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
 
+class ExboAuthManager:
+    """Управление авторизацией и получением Bearer-токена EXBO API."""
+    def __init__(self, client_id: str, client_secret: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.access_token = None
+
+    async def refresh_token(self, client: httpx.AsyncClient) -> bool:
+        print("🔑 Запрос нового access_token от EXBO...", flush=True)
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "client_credentials"
+        }
+        try:
+            res = await client.post(AUTH_URL, data=payload, timeout=10.0)
+            if res.status_code == 200:
+                data = res.json()
+                self.access_token = data.get("access_token")
+                print("✅ Токен EXBO успешно получен!", flush=True)
+                return True
+            else:
+                print(f"❌ Ошибка авторизации EXBO [{res.status_code}]: {res.text}", flush=True)
+        except Exception as e:
+            print(f"❌ Исключение при получении токена EXBO: {e}", flush=True)
+        return False
+
+    async def get_headers(self, client: httpx.AsyncClient) -> dict:
+        if not self.access_token:
+            await self.refresh_token(client)
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Client-Id": self.client_id
+        }
+
+
+auth_manager = ExboAuthManager(EXBO_CLIENT_ID, EXBO_CLIENT_SECRET)
+
+
 def parse_variants(item_data: dict) -> list[str]:
-    """Извлекает уровни заточки/варианты из поля _variants."""
     variants = []
     raw_variants = item_data.get("_variants") or item_data.get("variants") or []
 
@@ -45,7 +91,6 @@ def parse_variants(item_data: dict) -> list[str]:
 
 
 def initialize_items_database():
-    """Рекурсивно сканирует JSON-файлы, связывает редкости по color и варианты заточки."""
     print("🚀 Старт процесса инициализации коллектора...", flush=True)
 
     if not os.path.exists(DB_BASE_DIR):
@@ -102,11 +147,24 @@ def initialize_items_database():
 
 
 async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str) -> tuple[float | None, int]:
-    """Запрашивает минимальную цену выкупа с учетом редкости и заточки."""
+    url = f"{BASE_API_URL}/auction/{item_id}/lots"
+    params = {
+        "limit": 20,
+        "sort": "buyout_price",
+        "order": "asc",
+        "additional": "true"
+    }
+
     try:
-        url = f"{STALZONE_AUCTION_API}/{item_id}"
-        params = {"rarity": rarity, "variant": variant}
-        res = await client.get(url, params=params, timeout=10.0)
+        headers = await auth_manager.get_headers(client)
+        res = await client.get(url, params=params, headers=headers, timeout=10.0)
+
+        # Если токен истек, обновляем и повторяем запрос
+        if res.status_code == 401:
+            print("🔄 Токен истек, обновляем...", flush=True)
+            if await auth_manager.refresh_token(client):
+                headers = await auth_manager.get_headers(client)
+                res = await client.get(url, params=params, headers=headers, timeout=10.0)
 
         if res.status_code == 200:
             data = res.json()
@@ -114,15 +172,16 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
             if not lots:
                 return None, 0
 
-            buyout_prices = [
-                lot.get("buyout_price") or lot.get("price") 
-                for lot in lots 
-                if lot.get("buyout_price") or lot.get("price")
-            ]
+            buyout_prices = []
+            for lot in lots:
+                price = lot.get("buyoutPrice") or lot.get("buyout_price") or lot.get("startPrice")
+                if price and price > 0:
+                    buyout_prices.append(price)
+
             if buyout_prices:
                 return min(buyout_prices), len(lots)
-        else:
-            print(f"⚠️ API [{item_id}] ответил со статусом {res.status_code}", flush=True)
+        elif res.status_code != 404:
+            print(f"⚠️ API [{item_id}] статус {res.status_code}: {res.text}", flush=True)
 
     except Exception as e:
         print(f"⚠️ Ошибка запроса API [{item_id}]: {e}", flush=True)
@@ -131,7 +190,6 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
 
 
 async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: str, variant: str, min_price: float, total_lots: int):
-    """Записывает точечный снимок цен в таблицу price_history."""
     try:
         payload = {
             "item_id": item_id,
@@ -141,19 +199,23 @@ async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: 
             "variant": variant,
             "min_buyout_price": min_price,
             "total_lots": total_lots,
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
         supabase.table("price_history").insert(payload).execute()
     except Exception as e:
-        print(f"⚠️ Ошибка сохранения в Supabase [{item_name} - {rarity} +{variant}]: {e}", flush=True)
+        print(f"⚠️ Ошибка сохранения в Supabase [{item_name}]: {e}", flush=True)
 
 
 async def run_collector_cycle(tracked_items: list[dict]):
-    """Запускает один полный круг опроса аукциона."""
     now_str = datetime.now().strftime("%H:%M:%S")
     print(f"\n--- Сбор цен по выкупу [{now_str}] ---", flush=True)
 
     async with httpx.AsyncClient() as client:
+        # Предварительная проверка авторизации
+        if not await auth_manager.get_headers(client):
+            print("❌ Пропуск цикла: не удалось получить токен EXBO.", flush=True)
+            return
+
         for idx, item in enumerate(tracked_items):
             item_id = item["item_id"]
             item_name = item["item_name"]
@@ -179,7 +241,8 @@ async def run_collector_cycle(tracked_items: list[dict]):
                     total_lots=total_lots
                 )
 
-            await asyncio.sleep(0.1)
+            # Ограничение частоты запросов к EXBO (Rate Limit)
+            await asyncio.sleep(0.2)
 
 
 async def main():
