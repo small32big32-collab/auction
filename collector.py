@@ -93,7 +93,7 @@ def initialize_items_database():
                         category = data.get("category") or data.get("type", "")
                         if not category or category in ["artefact", "artifacts", "Артефакт"] or "artefact" in root.lower():
                             raw_items.append(data)
-                except Exception as e:
+                except Exception:
                     pass
 
     tracked_items = []
@@ -175,7 +175,7 @@ async def send_telegram_notification(client: httpx.AsyncClient, user_id: int, it
 
 
 async def sniper_monitoring_worker():
-    """Фоновый воркер: постоянно опрашивает EXBO API только по предметам из снайпера."""
+    """Фоновый воркер: опрашивает EXBO API только по активным снайперам."""
     print("🚀 Запущен независимый воркер снайперов (Прямой опрос EXBO API)...", flush=True)
     
     async with httpx.AsyncClient() as client:
@@ -187,38 +187,43 @@ async def sniper_monitoring_worker():
 
                 if snipers:
                     print(f"\n🎯 [Снайпер-Воркер] Проверка {len(snipers)} активных целей напрямую в EXBO API...", flush=True)
+                    for sniper in snipers:
+                        item_id = sniper.get("item_id")
+                        rarity = sniper.get("rarity", "Обычный")
+                        threshold = float(sniper.get("threshold", 0))
+                        user_id = sniper.get("user_id")
+                        item_name = sniper.get("item_name", item_id)
 
-                for sniper in snipers:
-                    item_id = sniper.get("item_id")
-                    rarity = sniper.get("rarity", "Обычный")
-                    threshold = float(sniper.get("threshold", 0))
-                    user_id = sniper.get("user_id")
-                    item_name = sniper.get("item_name", item_id)
+                        min_price, _ = await fetch_auction_price_direct(client, item_id, rarity, variant="0")
 
-                    # Прямой запрос к EXBO API
-                    min_price, _ = await fetch_auction_price_direct(client, item_id, rarity, variant="0")
+                        if min_price is not None:
+                            print(f"🎯 [Direct EXBO] {item_name} ({rarity}): {min_price:,.0f} руб. (Порог: {threshold:,.0f} руб.)", flush=True)
+                            if min_price <= threshold and user_id:
+                                await send_telegram_notification(client, user_id, item_name, rarity, min_price, threshold)
 
-                    if min_price is not None:
-                        print(f"🎯 [Direct EXBO] {item_name} ({rarity}): {min_price:,.0f} руб. (Порог: {threshold:,.0f} руб.)", flush=True)
-                        if min_price <= threshold and user_id:
-                            await send_telegram_notification(client, user_id, item_name, rarity, min_price, threshold)
-
-                    await asyncio.sleep(0.3)  # Пауза между запросами к API
+                        await asyncio.sleep(0.3)
+                else:
+                    print("🎯 [Снайпер-Воркер] Активных снайперов нет.", flush=True)
 
             except Exception as e:
                 print(f"⚠️ Ошибка в снайпер-воркере: {e}", flush=True)
 
-            # Пауза перед следующим циклом проверки снайперов (например, 10 секунд)
             await asyncio.sleep(10)
 
 
 async def general_collector_worker(tracked_items: list[dict]):
-    """Фоновый воркер: плановый обход всей базы артефактов."""
+    """Фоновый воркер: непрерывный обход всей базы артефактов."""
     async with httpx.AsyncClient() as client:
         while True:
-            print(f"\n--- [Общий сборщик] Старт фонового прохода по базе ---", flush=True)
-            for idx, item in enumerate(tracked_items):
+            print(f"\n--- [Общий сборщик] Старт фонового прохода по базе ({len(tracked_items)} предметов) ---", flush=True)
+            total = len(tracked_items)
+            
+            for idx, item in enumerate(tracked_items, start=1):
                 min_price, total_lots = await fetch_auction_price_direct(client, item["item_id"], item["rarity"], item["variant"])
+                
+                price_formatted = f"{min_price:,.0f} руб." if min_price is not None else "Нет лотов"
+                print(f"🔍 [{idx}/{total}] {item['item_name']} ({item['rarity']}) | Мин. цена: {price_formatted}", flush=True)
+
                 if min_price is not None:
                     try:
                         payload = {
@@ -232,18 +237,19 @@ async def general_collector_worker(tracked_items: list[dict]):
                             "created_at": datetime.now(timezone.utc).isoformat()
                         }
                         supabase.table("price_history").insert(payload).execute()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"⚠️ Ошибка сохранения в БД для {item['item_id']}: {e}", flush=True)
+
                 await asyncio.sleep(0.2)
+
+            print(f"--- [Общий сборщик] Проход завершен. Пауза 60 секунд ---", flush=True)
             await asyncio.sleep(60)
 
 
 async def main():
     tracked_items = initialize_items_database()
+    print(f"📦 Инициализировано предметов для сбора: {len(tracked_items)}", flush=True)
     
-    # Запускаем два параллельных процесса в одном event loop:
-    # 1. Быстрый снайпер-воркер (опрашивает только нужные предметы каждые 10 сек)
-    # 2. Общий сборщик историй цен
     await asyncio.gather(
         sniper_monitoring_worker(),
         general_collector_worker(tracked_items)
