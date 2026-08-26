@@ -68,19 +68,18 @@ def extract_rarity_from_json(data: dict, file_path: Path) -> str:
 
 
 def load_valuable_items() -> list[dict]:
-    # Учитываем возможные варианты расположения папки аукциона/репозитория
+    print(f"🔍 Рабочая директория: {Path.cwd()}")
+    print(f"🔍 Директория файла: {Path(__file__).parent}")
+
     possible_paths = [
-        Path("/app/auction/stalzone-database/ru/items"),
         Path("/app/stalzone-database/ru/items"),
+        Path("/app/auction/stalzone-database/ru/items"),
         Path(__file__).parent / "stalzone-database" / "ru" / "items",
         Path(__file__).parent / "auction" / "stalzone-database" / "ru" / "items",
         Path.cwd() / "stalzone-database" / "ru" / "items",
         Path.cwd() / "auction" / "stalzone-database" / "ru" / "items",
         Path.cwd().parent / "stalzone-database" / "ru" / "items",
     ]
-    
-    print(f"🔍 Рабочая директория: {Path.cwd()}")
-    print(f"🔍 Директория файла: {Path(__file__).parent}")
 
     base_dir = None
     for p in possible_paths:
@@ -101,9 +100,7 @@ def load_valuable_items() -> list[dict]:
             print(f"⚠️ Подпапка {cat_folder} не найдена в {base_dir}")
             continue
 
-        # rglob автоматически пройдет по всем вложенным папкам (например, biochemical и др.)
         for path in folder_path.rglob("*.json"):
-            # Игнорируем технические папки вроде _variants
             if "_variants" in path.parts:
                 continue
                 
@@ -268,9 +265,9 @@ def collect_iteration(items: list[dict]):
 
 
 if __name__ == "__main__":
-    print("🔄 Загрузка локальной базы предметов (Только Артефакты)...")
+    print("🔄 Старт процесса инициализации коллектора...")
     cached_items = load_valuable_items()
-    print(f"✅ Загружено предметов: {len(cached_items)}")
+    print(f"✅ Инициализация завершена. Загружено предметов: {len(cached_items)}")
 
     while True:
         try:
