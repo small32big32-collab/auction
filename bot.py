@@ -113,11 +113,22 @@ async def process_license_key(message: types.Message, state: FSMContext):
 
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
+            res = await client.get(
+                f"{API_BASE_URL}/items/{license_key}", 
+                params={"telegram_id": user_id}, 
+                timeout=5.0
+            )
             if res.status_code == 200:
                 user_sessions[user_id] = license_key
                 await state.clear()
                 await send_main_menu(message, text_prefix="✅ **Авторизация успешна!**\n\n")
+            elif res.status_code == 403:
+                await message.answer(
+                    "⛔ **Этот ключ уже привязан к другому Telegram-аккаунту!**\n"
+                    "Введите другой ключ или приобретите новый:",
+                    reply_markup=get_auth_inline_menu(),
+                    parse_mode="Markdown"
+                )
             else:
                 await message.answer(
                     "❌ **Неверный или просроченный ключ.** Попробуйте ввести другой или купите новый:",
@@ -204,7 +215,11 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
 
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
+            res = await client.get(
+                f"{API_BASE_URL}/items/{license_key}", 
+                params={"telegram_id": user_id}, 
+                timeout=5.0
+            )
             items = res.json().get("data", [])
         except Exception as e:
             await callback.message.answer(f"⚠️ Ошибка загрузки каталога: {e}")
@@ -236,7 +251,11 @@ async def select_item_info(callback: types.CallbackQuery):
     item_name = item_id
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
+            res = await client.get(
+                f"{API_BASE_URL}/items/{license_key}", 
+                params={"telegram_id": user_id}, 
+                timeout=5.0
+            )
             items = res.json().get("data", [])
             for item in items:
                 if item["item_id"] == item_id:
@@ -271,7 +290,11 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     # Ищем цену с учетом выбранной редкости
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
+            res = await client.get(
+                f"{API_BASE_URL}/items/{license_key}", 
+                params={"telegram_id": user_id}, 
+                timeout=5.0
+            )
             items = res.json().get("data", [])
             for item in items:
                 if item["item_id"] == item_id and item.get("rarity") == rarity:
