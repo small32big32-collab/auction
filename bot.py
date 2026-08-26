@@ -2,20 +2,25 @@ import os
 import asyncio
 import httpx
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 
+# Ссылки для нижних inline-кнопок (замените на свои при необходимости)
+SUPPORT_URL = "https://t.me/your_support_username"
+TERMS_URL = "https://example.com/terms"
+PRIVACY_URL = "https://example.com/privacy"
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- Состояния FSM ---
+# --- FSM Состояния ---
 class AuthState(StatesGroup):
     waiting_for_key = State()
 
@@ -23,24 +28,40 @@ class SniperState(StatesGroup):
     waiting_for_price = State()
     waiting_for_edit_price = State()
 
-# Временное хранение сессий авторизованных пользователей в памяти
 user_sessions = {}
 
-# --- Клавиатуры ---
-def get_main_keyboard():
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="🎯 Мои снайперы")
-    builder.button(text="📦 Каталог предметов")
-    builder.button(text="🔑 Сменить ключ")
-    builder.adjust(2, 1)
-    return builder.as_markup(resize_keyboard=True)
+# --- Генерация оригинального Inline-меню со скриншота ---
+def get_main_inline_menu():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📂 Каталог предметов", callback_data="menu_catalog")],
+        [InlineKeyboardButton(text="🎯 Настроить снайпер цен", callback_data="menu_snipers")],
+        [InlineKeyboardButton(text="🔑 Сменить ключ", callback_data="menu_change_key")],
+        [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_URL)],
+        [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
+        [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
+    ])
+    return keyboard
+
+async def send_main_menu(message_or_callback, text_prefix=""):
+    text = (
+        f"{text_prefix}"
+        "👋 **Stalzone Auction Bot**\n\n"
+        "Добро пожаловать! Инструмент для мониторинга и анализа цен аукциона артефактов.\n"
+        "Выберите нужный пункт меню ниже:"
+    )
+    markup = get_main_inline_menu()
+    
+    if isinstance(message_or_callback, types.CallbackQuery):
+        await message_or_callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await message_or_callback.answer(text, reply_markup=markup, parse_mode="Markdown")
 
 # --- Старт и Авторизация ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id in user_sessions:
-        await message.answer("👋 С возвращением в **Stalzone Sniper Bot**!", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        await send_main_menu(message)
         return
 
     await state.set_state(AuthState.waiting_for_key)
@@ -57,27 +78,28 @@ async def process_license_key(message: types.Message, state: FSMContext):
             if res.status_code == 200:
                 user_sessions[user_id] = license_key
                 await state.clear()
-                await message.answer("✅ **Авторизация успешна!** Добро пожаловать.", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+                await send_main_menu(message, text_prefix="✅ **Авторизация успешна!**\n\n")
             else:
                 await message.answer("❌ **Неверный или просроченный ключ.** Попробуйте ввести другой:")
         except Exception as e:
             await message.answer(f"⚠️ Ошибка подключения к серверу: {e}")
 
-@dp.message(F.text == "🔑 Сменить ключ")
-async def change_key_cmd(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
+@dp.callback_query(F.data == "menu_change_key")
+async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
     user_sessions.pop(user_id, None)
     await state.set_state(AuthState.waiting_for_key)
-    await message.answer("🔑 Введите новый ключ доступа:", parse_mode="Markdown")
+    await callback.message.answer("🔑 Введите новый ключ доступа:", parse_mode="Markdown")
+    await callback.answer()
 
-# --- Каталог и Создание Снайпера ---
-@dp.message(F.text == "📦 Каталог предметов")
-async def show_catalog(message: types.Message):
-    user_id = message.from_user.id
+# --- Обработка Каталога ---
+@dp.callback_query(F.data == "menu_catalog")
+async def show_catalog_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
     license_key = user_sessions.get(user_id)
 
     if not license_key:
-        await message.answer("⚠️ Вы не авторизованы. Отправьте /start для ввода ключа.")
+        await callback.answer("⚠️ Сначала введите ключ доступа!", show_alert=True)
         return
 
     async with httpx.AsyncClient() as client:
@@ -85,15 +107,16 @@ async def show_catalog(message: types.Message):
             res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
             items = res.json().get("data", [])
         except Exception as e:
-            await message.answer(f"⚠️ Ошибка загрузки каталога: {e}")
+            await callback.message.answer(f"⚠️ Ошибка загрузки каталога: {e}")
+            await callback.answer()
             return
 
     if not items:
-        await message.answer("📦 Каталог предметов пуст.")
+        await callback.message.answer("📦 Каталог предметов пуст.")
+        await callback.answer()
         return
 
     builder = InlineKeyboardBuilder()
-    # Ограничиваем первыми 20 предметами для компактности
     for item in items[:20]:
         i_id = item["item_id"]
         name = item.get("name", i_id)
@@ -101,7 +124,10 @@ async def show_catalog(message: types.Message):
         builder.button(text=f"{name} ({rarity})", callback_data=f"add_sniper_{i_id}_{rarity}")
 
     builder.adjust(1)
-    await message.answer("📦 **Выберите предмет из списка для установки снайпера:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    builder.row(InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu"))
+    
+    await callback.message.edit_text("📂 **Выберите предмет из каталога:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("add_sniper_"))
 async def select_item_for_sniper(callback: types.CallbackQuery, state: FSMContext):
@@ -112,14 +138,14 @@ async def select_item_for_sniper(callback: types.CallbackQuery, state: FSMContex
     await state.update_data(target_item_id=item_id, target_rarity=rarity)
     await state.set_state(SniperState.waiting_for_price)
 
-    await callback.message.answer(f"🎯 Выбран предмет: `{item_id}` (`{rarity}`).\n\nВведите **максимальную цену в рублях**, при которой присылать уведомление:", parse_mode="Markdown")
+    await callback.message.answer(f"🎯 Выбран предмет: `{item_id}` ({rarity}).\n\nВведите **максимальную цену в рублях**:", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(SniperState.waiting_for_price)
 async def set_sniper_price(message: types.Message, state: FSMContext):
     clean_text = message.text.replace(" ", "").replace(",", "")
     if not clean_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите корректную сумму числом.")
+        await message.answer("⚠️ Пожалуйста, введите корректное число.")
         return
 
     price = float(clean_text)
@@ -140,33 +166,37 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
         try:
             res = await client.post(f"{API_BASE_URL}/snipers", json=payload, timeout=5.0)
             if res.status_code == 200:
-                await message.answer(f"✅ **Снайпер успешно уставителен!**\n\nПредмет: `{data['target_item_id']}`\nЦелевая цена: **{price:,.0f} руб.**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+                await message.answer(f"✅ **Снайпер установлен!**\nПредмет: `{data['target_item_id']}`\nЦена: **{price:,.0f} руб.**", parse_mode="Markdown")
+                await send_main_menu(message)
             else:
-                await message.answer("❌ Ошибка сохранения снайпера на сервере.")
+                await message.answer("❌ Ошибка сохранения снайпера.")
         except Exception as e:
-            await message.answer(f"⚠️ Ошибка соединения: {e}")
+            await message.answer(f"⚠️ Ошибка сети: {e}")
 
     await state.clear()
 
-# --- Мои Снайперы (Интерактивный Список) ---
-@dp.message(F.text == "🎯 Мои снайперы")
-async def show_user_snipers(message: types.Message):
-    user_id = message.from_user.id
+# --- Снайперы с Редактированием и Удалением ---
+@dp.callback_query(F.data == "menu_snipers")
+async def show_user_snipers_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
 
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE_URL}/snipers/{user_id}", timeout=5.0)
             snipers = res.json().get("data", [])
         except Exception as e:
-            await message.answer(f"⚠️ Ошибка получения снайперов: {e}")
+            await callback.message.answer(f"⚠️ Ошибка получения снайперов: {e}")
+            await callback.answer()
             return
 
     if not snipers:
-        await message.answer("🎯 У вас нет активных снайперов.", reply_markup=get_main_keyboard())
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ В главное меню", callback_data="to_main_menu")
+        await callback.message.edit_text("🎯 У вас нет активных снайперов.", reply_markup=builder.as_markup())
+        await callback.answer()
         return
 
     builder = InlineKeyboardBuilder()
-
     for s in snipers:
         s_id = s["id"]
         name = s.get("item_name", s.get("item_id", "Предмет"))
@@ -182,7 +212,8 @@ async def show_user_snipers(message: types.Message):
         InlineKeyboardButton(text="⬅️ Главное меню", callback_data="to_main_menu")
     )
 
-    await message.answer("🎯 **Ваши активные снайперы:**\n\nНажмите на предмет для изменения цены или удаления:", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.message.edit_text("🎯 **Ваши снайперы:**\n\nНажмите на снайпер для изменения цены или удаления:", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("manage_sniper_"))
 async def manage_sniper_menu(callback: types.CallbackQuery):
@@ -193,16 +224,11 @@ async def manage_sniper_menu(callback: types.CallbackQuery):
             InlineKeyboardButton(text="✏️ Изменить цену", callback_data=f"edit_price_{sniper_id}"),
             InlineKeyboardButton(text="🗑 Удалить снайпер", callback_data=f"delete_single_{sniper_id}")
         ],
-        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="back_to_snipers")]
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="menu_snipers")]
     ])
 
-    await callback.message.edit_text("⚙️ **Выберите действие для снайпера:**", reply_markup=keyboard, parse_mode="Markdown")
+    await callback.message.edit_text("⚙️ **Выберите действие:**", reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
-
-@dp.callback_query(F.data == "back_to_snipers")
-async def back_to_snipers_handler(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await show_user_snipers(callback.message)
 
 @dp.callback_query(F.data.startswith("delete_single_"))
 async def delete_single_sniper_handler(callback: types.CallbackQuery):
@@ -211,9 +237,8 @@ async def delete_single_sniper_handler(callback: types.CallbackQuery):
     async with httpx.AsyncClient() as client:
         await client.delete(f"{API_BASE_URL}/snipers/single/{sniper_id}")
 
-    await callback.answer("✅ Снайпер успешно удален!", show_alert=True)
-    await callback.message.delete()
-    await show_user_snipers(callback.message)
+    await callback.answer("✅ Снайпер удален!", show_alert=True)
+    await show_user_snipers_callback(callback)
 
 @dp.callback_query(F.data == "delete_all_snipers")
 async def delete_all_snipers_handler(callback: types.CallbackQuery):
@@ -223,7 +248,7 @@ async def delete_all_snipers_handler(callback: types.CallbackQuery):
         await client.delete(f"{API_BASE_URL}/snipers/{user_id}")
 
     await callback.answer("✅ Все снайперы удалены!", show_alert=True)
-    await callback.message.edit_text("🎯 Все ваши снайперы очищены.")
+    await send_main_menu(callback)
 
 @dp.callback_query(F.data.startswith("edit_price_"))
 async def edit_price_start(callback: types.CallbackQuery, state: FSMContext):
@@ -231,7 +256,7 @@ async def edit_price_start(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(editing_sniper_id=sniper_id)
     await state.set_state(SniperState.waiting_for_edit_price)
 
-    await callback.message.answer("✏️ Введите новую пороговую цену в рублях (например: `350000`):", parse_mode="Markdown")
+    await callback.message.answer("✏️ Введите новую цену в рублях (например: `350000`):", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(SniperState.waiting_for_edit_price)
@@ -239,7 +264,7 @@ async def process_new_price(message: types.Message, state: FSMContext):
     clean_text = message.text.replace(" ", "").replace(",", "")
 
     if not clean_text.isdigit():
-        await message.answer("⚠️ Введите число.")
+        await message.answer("⚠️ Пожалуйста, введите число.")
         return
 
     new_price = float(clean_text)
@@ -253,13 +278,13 @@ async def process_new_price(message: types.Message, state: FSMContext):
         )
 
     await state.clear()
-    await message.answer(f"✅ Новая пороговая цена: **{new_price:,.0f} руб.**", parse_mode="Markdown")
-    await show_user_snipers(message)
+    await message.answer(f"✅ Цена обновлена: **{new_price:,.0f} руб.**", parse_mode="Markdown")
+    await send_main_menu(message)
 
 @dp.callback_query(F.data == "to_main_menu")
 async def to_main_menu_handler(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await callback.message.answer("🏠 Главное меню:", reply_markup=get_main_keyboard())
+    await send_main_menu(callback)
+    await callback.answer()
 
 async def main():
     print("🚀 Запуск Telegram-бота...")
