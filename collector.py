@@ -93,14 +93,23 @@ def load_valuable_items() -> list[dict]:
         return items_list
 
     print(f"✅ База данных найдена: {base_dir}")
+    
+    try:
+        subdirs = [x.name for x in base_dir.iterdir() if x.is_dir()]
+        print(f"📂 Доступные категории в папке items: {subdirs}")
+    except Exception as e:
+        print(f"⚠️ Не удалось прочитать содержимое папки: {e}")
 
     for cat_folder, cat_name in TARGET_CATEGORIES.items():
         folder_path = base_dir / cat_folder
         if not folder_path.exists():
-            print(f"⚠️ Подпапка {cat_folder} не найдена в {base_dir}")
+            print(f"⚠️ Подпапка категории '{cat_folder}' не найдена в {base_dir}")
             continue
 
-        for path in folder_path.rglob("*.json"):
+        json_files = list(folder_path.rglob("*.json"))
+        print(f"📄 Найдено JSON-файлов в категории '{cat_folder}': {len(json_files)}")
+
+        for path in json_files:
             if "_variants" in path.parts:
                 continue
                 
