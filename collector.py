@@ -26,7 +26,7 @@ ALL_RARITIES = [
 
 
 def initialize_items_database():
-    """Загружает артефакты из JSON и формирует список для отслеживания всех 6 редкостей."""
+    """Рекурсивно сканирует директорию с базой данных и формирует список для отслеживания всех 6 редкостей."""
     print("🚀 Старт процесса инициализации коллектора...")
     print(f"🔍 Рабочая директория: {os.getcwd()}")
     print(f"🔍 Директория файла: {os.path.dirname(os.path.abspath(__file__))}")
@@ -37,31 +37,39 @@ def initialize_items_database():
 
     print(f"✅ База данных найдена: {DB_BASE_DIR}")
 
-    artefacts_dir = os.path.join(DB_BASE_DIR, "artefact")
-    if not os.path.exists(artefacts_dir):
-        artefacts_dir = DB_BASE_DIR
-
-    json_files = [f for f in os.listdir(artefacts_dir) if f.endswith(".json")]
-    print(f"📄 Найдено основных JSON-файлов предметов в категории 'artefact': {len(json_files)}")
-
     raw_items = []
-    for filename in json_files:
-        filepath = os.path.join(artefacts_dir, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                raw_items.append(data)
-        except Exception as e:
-            print(f"⚠️ Ошибка чтения файла {filename}: {e}")
+    
+    # Рекурсивный поиск всех .json файлов во всех подпапках DB_BASE_DIR
+    for root, _, files in os.walk(DB_BASE_DIR):
+        for filename in files:
+            if filename.endswith(".json"):
+                filepath = os.path.join(root, filename)
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        
+                        # Проверяем категорию (если поле присутствуют в JSON)
+                        category = data.get("category") or data.get("type", "")
+                        
+                        # Если категория артефакт или файл находится в папке artefact / не размечен
+                        if not category or category in ["artefact", "artifacts", "Артефакт"] or "artefact" in root.lower():
+                            raw_items.append(data)
+                except Exception as e:
+                    print(f"⚠️ Ошибка чтения файла {filename}: {e}")
 
-    print(f"Успешно загружено предметов в категории 'artefact': {len(raw_items)}")
+    print(f"📄 Найдено и успешно загружено предметов в категории 'artefact': {len(raw_items)}")
 
     tracked_items = []
     rarity_stats = {r: 0 for r in ALL_RARITIES}
 
     for item in raw_items:
         item_id = item.get("id") or item.get("item_id")
-        item_name = item.get("name", {}).get("lines", {}).get("ru") if isinstance(item.get("name"), dict) else item.get("name", item_id)
+        
+        # Получаем наименование предмета из структуры локализации или поля name
+        if isinstance(item.get("name"), dict):
+            item_name = item.get("name", {}).get("lines", {}).get("ru", item_id)
+        else:
+            item_name = item.get("name", item_id)
 
         if not item_id:
             continue
