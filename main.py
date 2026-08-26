@@ -31,7 +31,6 @@ def verify_license_key(license_key: str) -> bool:
         .eq("key", clean_key)
         .execute()
     )
-    print(f"DEBUG: Проверка ключа '{clean_key}' -> Результат БД: {res.data}")
     if res.data and res.data[0].get("is_active") is True:
       return True
     return False
@@ -103,7 +102,7 @@ def get_history_by_key(license_key: str, item_id: str):
 @app.post("/api/login/snipers")
 def create_sniper(data: SniperCreate):
   payload = {
-      "user_id": data.user_id,  # int8 в PostgreSQL
+      "user_id": data.user_id,
       "license_key": data.license_key,
       "item_id": data.item_id,
       "item_name": data.item_name,
