@@ -34,28 +34,43 @@ KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Ре�
 
 
 def extract_rarity_from_json(data: dict, file_path: Path) -> str:
-    """Точное извлечение редкости артефакта из структуры JSON или имени файла"""
-    info_blocks = data.get("infoBlocks", [])
-    for block in info_blocks:
-        elements = block.get("elements", [])
-        for el in elements:
-            key_dict = el.get("key", {})
-            if "quality" in key_dict.get("key", "") or "rarity" in key_dict.get("key", ""):
-                ru_text = key_dict.get("lines", {}).get("ru", "")
-                if ru_text in KNOWN_RARITIES:
-                    return ru_text
-            
-            val_dict = el.get("value", {})
-            ru_val = val_dict.get("lines", {}).get("ru", "")
-            if ru_val in KNOWN_RARITIES:
-                return ru_val
+    """Безопасное извлечение редкости артефакта с защитой от типов float/str в блоках"""
+    try:
+        if isinstance(data, dict):
+            info_blocks = data.get("infoBlocks")
+            if isinstance(info_blocks, list):
+                for block in info_blocks:
+                    if isinstance(block, dict):
+                        elements = block.get("elements")
+                        if isinstance(elements, list):
+                            for el in elements:
+                                if isinstance(el, dict):
+                                    key_dict = el.get("key")
+                                    if isinstance(key_dict, dict):
+                                        key_str = str(key_dict.get("key", ""))
+                                        if "quality" in key_str or "rarity" in key_str:
+                                            lines = key_dict.get("lines")
+                                            if isinstance(lines, dict):
+                                                ru_text = lines.get("ru", "")
+                                                if ru_text in KNOWN_RARITIES:
+                                                    return ru_text
 
-    color = data.get("color", "").upper()
-    if "UNCOMMON" in color: return "Необычный"
-    if "SPECIAL" in color: return "Особый"
-    if "RARE" in color: return "Редкий"
-    if "EXCEPTIONAL" in color: return "Исключительный"
-    if "LEGENDARY" in color: return "Легендарный"
+                                    val_dict = el.get("value")
+                                    if isinstance(val_dict, dict):
+                                        lines = val_dict.get("lines")
+                                        if isinstance(lines, dict):
+                                            ru_val = lines.get("ru", "")
+                                            if ru_val in KNOWN_RARITIES:
+                                                return ru_val
+
+            color = str(data.get("color", "")).upper()
+            if "UNCOMMON" in color: return "Необычный"
+            if "SPECIAL" in color: return "Особый"
+            if "RARE" in color: return "Редкий"
+            if "EXCEPTIONAL" in color: return "Исключительный"
+            if "LEGENDARY" in color: return "Легендарный"
+    except Exception:
+        pass
 
     path_str = str(file_path).lower()
     if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
@@ -111,16 +126,11 @@ def load_valuable_items() -> list[dict]:
         print(f"📄 Найдено основных JSON-файлов предметов в категории '{cat_folder}': {len(json_files)}")
 
         success_count = 0
-        debug_printed = 0
         for path in json_files:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     
-                    if debug_printed < 2:
-                        print(f"🔎 DEBUG {path.name} тип: {type(data)}, ключи/содержимое: {list(data.keys()) if isinstance(data, dict) else str(data)[:100]}")
-                        debug_printed += 1
-
                     if not isinstance(data, dict):
                         continue
                     
@@ -129,8 +139,9 @@ def load_valuable_items() -> list[dict]:
                     name = None
                     name_block = data.get("name")
                     if isinstance(name_block, dict):
-                        lines = name_block.get("lines", {})
-                        name = lines.get("ru") or lines.get("en")
+                        lines = name_block.get("lines")
+                        if isinstance(lines, dict):
+                            name = lines.get("ru") or lines.get("en")
                     elif isinstance(name_block, str):
                         name = name_block
                     
