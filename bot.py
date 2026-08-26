@@ -31,7 +31,7 @@ class SniperState(StatesGroup):
 
 user_sessions = {}
 
-# --- Инлайн-клавиатура оплаты ---
+# --- Инлайн-клавиатуры ---
 def get_buy_options_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ Оплатить Telegram Stars", callback_data="buy_stars")],
@@ -39,7 +39,6 @@ def get_buy_options_keyboard():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main_menu")]
     ])
 
-# --- Меню авторизации (до ввода ключа) ---
 def get_auth_inline_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Купить ключ", callback_data="open_buy_menu")],
@@ -48,7 +47,6 @@ def get_auth_inline_menu():
         [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
     ])
 
-# --- Главное Inline-меню (после авторизации) ---
 def get_main_inline_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📂 Каталог предметов", callback_data="menu_catalog")],
@@ -59,6 +57,23 @@ def get_main_inline_menu():
         [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
         [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
     ])
+
+def get_rarity_keyboard(item_id: str):
+    rarities = [
+        ("⚪ Обычный", "Обычный"),
+        ("🟢 Необычный", "Необычный"),
+        ("🔵 Особый", "Особый"),
+        ("🟣 Редкий", "Редкий"),
+        ("🔴 Исключительный", "Исключительный"),
+        ("🟡 Легендарный", "Легендарный")
+    ]
+    builder = InlineKeyboardBuilder()
+    for label, r_val in rarities:
+        builder.button(text=label, callback_data=f"setrarity:{item_id}:{r_val}")
+    
+    builder.adjust(2)
+    builder.row(InlineKeyboardButton(text="⬅️ Назад в каталог", callback_data="menu_catalog"))
+    return builder.as_markup()
 
 async def send_main_menu(message_or_callback, text_prefix=""):
     text = (
@@ -74,7 +89,7 @@ async def send_main_menu(message_or_callback, text_prefix=""):
     else:
         await message_or_callback.answer(text, reply_markup=markup, parse_mode="Markdown")
 
-# --- Старт и проверка авторизации ---
+# --- Старт и авторизация ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -111,12 +126,12 @@ async def process_license_key(message: types.Message, state: FSMContext):
         except Exception as e:
             await message.answer(f"⚠️ Ошибка подключения к серверу: {e}")
 
-# --- Покупка ключей и платежные шлюзы ---
+# --- Оплата ---
 @dp.callback_query(F.data == "open_buy_menu")
 async def open_buy_menu_handler(callback: types.CallbackQuery):
     await callback.message.edit_text(
         "💳 **Выберите удобный способ оплаты ключа доступа:**\n\n"
-        "• **Telegram Stars** — быстрая оплата внутри мессенджера.\n"
+        "• **Telegram Stars** — оплата прямо внутри мессенджера.\n"
         "• **Platega** — оплата банковскими картами и СБП.",
         reply_markup=get_buy_options_keyboard(),
         parse_mode="Markdown"
@@ -149,7 +164,7 @@ async def successful_payment_handler(message: types.Message):
         parse_mode="Markdown"
     )
 
-# --- Управление аккаунтом и навигация ---
+# --- Навигация ---
 @dp.callback_query(F.data == "menu_change_key")
 async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -175,7 +190,7 @@ async def to_main_menu_handler(callback: types.CallbackQuery):
         await send_main_menu(callback)
     await callback.answer()
 
-# --- Логика Каталога ---
+# --- Каталог и Выбор Предметов ---
 @dp.callback_query(F.data == "menu_catalog")
 async def show_catalog_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -203,24 +218,78 @@ async def show_catalog_callback(callback: types.CallbackQuery):
     for item in items[:20]:
         i_id = item["item_id"]
         name = item.get("name", i_id)
-        rarity = item.get("rarity", "Обычный")
-        builder.button(text=f"{name} ({rarity})", callback_data=f"add_sniper_{i_id}_{rarity}")
+        builder.button(text=f"🔮 {name}", callback_data=f"select_item:{i_id}")
 
     builder.adjust(1)
     builder.row(InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu"))
     await callback.message.edit_text("📂 **Выберите предмет из каталога:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("add_sniper_"))
-async def select_item_for_sniper(callback: types.CallbackQuery, state: FSMContext):
-    parts = callback.data.split("_")
-    item_id = parts[2]
-    rarity = parts[3] if len(parts) > 3 else "Обычный"
+@dp.callback_query(F.data.startswith("select_item:"))
+async def select_item_info(callback: types.CallbackQuery):
+    item_id = callback.data.split(":")[1]
+    user_id = callback.from_user.id
+    license_key = user_sessions.get(user_id)
 
-    await state.update_data(target_item_id=item_id, target_rarity=rarity)
+    item_name = item_id
+    min_price = 0
+
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
+            items = res.json().get("data", [])
+            for item in items:
+                if item["item_id"] == item_id:
+                    item_name = item.get("name", item_id)
+                    min_price = item.get("min_price", item.get("price", 0))
+                    break
+        except Exception:
+            pass
+
+    price_str = f"{min_price:,.0f} руб." if min_price else "Нет данных"
+
+    text = (
+        f"🔮 **Предмет:** {item_name}\n"
+        f"💰 **Текущая минимальная цена:** `{price_str}`\n\n"
+        f"Выберите **редкость** предмета для настройки снайпера:"
+    )
+
+    await callback.message.edit_text(
+        text, 
+        reply_markup=get_rarity_keyboard(item_id), 
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("setrarity:"))
+async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    item_id = parts[1]
+    rarity = parts[2]
+    user_id = callback.from_user.id
+    license_key = user_sessions.get(user_id)
+
+    item_name = item_id
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
+            items = res.json().get("data", [])
+            for item in items:
+                if item["item_id"] == item_id:
+                    item_name = item.get("name", item_id)
+                    break
+        except Exception:
+            pass
+
+    await state.update_data(target_item_id=item_id, target_item_name=item_name, target_rarity=rarity)
     await state.set_state(SniperState.waiting_for_price)
 
-    await callback.message.answer(f"🎯 Выбран предмет: `{item_id}` ({rarity}).\n\nВведите **максимальную цену в рублях**:", parse_mode="Markdown")
+    await callback.message.answer(
+        f"🎯 Выбран предмет: **{item_name}**\n"
+        f"Редкость: **{rarity}**\n\n"
+        f"Введите **максимальную цену в рублях**, при которой бот должен прислать уведомление:",
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
 @dp.message(SniperState.waiting_for_price)
@@ -235,11 +304,13 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
     license_key = user_sessions.get(user_id)
     data = await state.get_data()
 
+    item_name = data.get("target_item_name", data["target_item_id"])
+
     payload = {
         "user_id": user_id,
         "license_key": license_key,
         "item_id": data["target_item_id"],
-        "item_name": data["target_item_id"],
+        "item_name": item_name,
         "rarity": data["target_rarity"],
         "threshold": price
     }
@@ -248,7 +319,12 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
         try:
             res = await client.post(f"{API_BASE_URL}/snipers", json=payload, timeout=5.0)
             if res.status_code == 200:
-                await message.answer(f"✅ **Снайпер установлен!**\nПредмет: `{data['target_item_id']}`\nЦена: **{price:,.0f} руб.**", parse_mode="Markdown")
+                await message.answer(
+                    f"✅ **Снайпер установлен!**\n"
+                    f"Предмет: **{item_name}** ({data['target_rarity']})\n"
+                    f"Порог цены: **{price:,.0f} руб.**", 
+                    parse_mode="Markdown"
+                )
                 await send_main_menu(message)
             else:
                 await message.answer("❌ Ошибка сохранения снайпера.")
@@ -257,7 +333,7 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# --- Логика Снайперов ---
+# --- Снайперы ---
 @dp.callback_query(F.data == "menu_snipers")
 async def show_user_snipers_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -291,7 +367,7 @@ async def show_user_snipers_callback(callback: types.CallbackQuery):
         InlineKeyboardButton(text="❌ Удалить все", callback_data="delete_all_snipers"),
         InlineKeyboardButton(text="⬅️ Главное меню", callback_data="to_main_menu")
     )
-    await callback.message.edit_text("🎯 **Ваши снайперы:**\n\nНажмите на снайпер для управления:", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.message.edit_text("🎯 **Ваши снайперы:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("manage_sniper_"))
