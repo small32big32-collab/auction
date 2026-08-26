@@ -251,7 +251,7 @@ async def on_successful_payment(message: types.Message, state: FSMContext):
 async def process_key_input(message: types.Message, state: FSMContext):
   license_key = message.text.strip()
 
-  url = f"{API_BASE_URL}/items/{license_key}"
+  url = f"{API_BASE_URL}{license_key}"
   print(f"DEBUG: Отправка запроса проверки ключа на URL: {url}")
 
   async with httpx.AsyncClient() as client:
