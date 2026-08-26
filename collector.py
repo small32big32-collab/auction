@@ -5,14 +5,12 @@ import httpx
 from datetime import datetime, timezone
 from supabase import create_client, Client
 
-# Настройки окружения
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Авторизация EXBO API
-EXBO_CLIENT_ID = os.getenv("EXBO_CLIENT_ID", "3919")
-EXBO_CLIENT_SECRET = os.getenv("EXBO_CLIENT_SECRET", "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl")
+EXBO_CLIENT_ID = os.getenv("EXBO_CLIENT_ID", "")
+EXBO_CLIENT_SECRET = os.getenv("EXBO_CLIENT_SECRET", "")
 REGION = os.getenv("STALCRAFT_REGION", "RU")
 
 AUTH_URL = "https://exbo.net/oauth/token"
@@ -25,9 +23,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 RARITY_TO_QLT = {"Обычный": 0, "Необычный": 1, "Особый": 2, "Редкий": 3, "Исключительный": 4, "Легендарный": 5}
 
+# Множество для защиты от зацикливания повторных уведомлений воркера
+triggered_snipers_cache = set()
 
 class ExboAuthManager:
-    """Управление авторизацией и получением Bearer-токена EXBO API."""
     def __init__(self, client_id: str, client_secret: str):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -59,9 +58,7 @@ class ExboAuthManager:
             "Client-Id": self.client_id
         }
 
-
 auth_manager = ExboAuthManager(EXBO_CLIENT_ID, EXBO_CLIENT_SECRET)
-
 
 def parse_variants(item_data: dict) -> list[str]:
     variants = []
@@ -75,7 +72,6 @@ def parse_variants(item_data: dict) -> list[str]:
             elif isinstance(v, (int, str)):
                 variants.append(str(v))
     return variants if variants else ["0"]
-
 
 def initialize_items_database():
     if not os.path.exists(DB_BASE_DIR):
@@ -115,9 +111,7 @@ def initialize_items_database():
                 })
     return tracked_items
 
-
 async def fetch_auction_price_direct(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str = "0") -> tuple[float | None, int]:
-    """Прямой запрос лотов аукциона напрямую из EXBO API."""
     url = f"{BASE_API_URL}/auction/{item_id}/lots"
     params = {"limit": 200, "sort": "buyout_price", "order": "asc", "additional": "true"}
 
@@ -155,7 +149,6 @@ async def fetch_auction_price_direct(client: httpx.AsyncClient, item_id: str, ra
 
     return None, 0
 
-
 async def send_telegram_notification(client: httpx.AsyncClient, user_id: int, item_name: str, rarity: str, min_price: float, threshold: float):
     text = (
         f"🎯 **СНАЙПЕР СРАБОТАЛ!**\n\n"
@@ -173,21 +166,18 @@ async def send_telegram_notification(client: httpx.AsyncClient, user_id: int, it
     except Exception as e:
         print(f"⚠️ Ошибка отправки в Telegram: {e}", flush=True)
 
-
 async def sniper_monitoring_worker():
-    """Фоновый воркер: опрашивает EXBO API только по активным снайперам."""
     print("🚀 Запущен независимый воркер снайперов (Прямой опрос EXBO API)...", flush=True)
     
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                # Получаем активные снайперы из Supabase
                 res = supabase.table("user_snipers").select("*").execute()
                 snipers = res.data or []
 
                 if snipers:
-                    print(f"\n🎯 [Снайпер-Воркер] Проверка {len(snipers)} активных целей напрямую в EXBO API...", flush=True)
                     for sniper in snipers:
+                        s_id = sniper.get("id")
                         item_id = sniper.get("item_id")
                         rarity = sniper.get("rarity", "Обычный")
                         threshold = float(sniper.get("threshold", 0))
@@ -197,9 +187,14 @@ async def sniper_monitoring_worker():
                         min_price, _ = await fetch_auction_price_direct(client, item_id, rarity, variant="0")
 
                         if min_price is not None:
-                            print(f"🎯 [Direct EXBO] {item_name} ({rarity}): {min_price:,.0f} руб. (Порог: {threshold:,.0f} руб.)", flush=True)
                             if min_price <= threshold and user_id:
-                                await send_telegram_notification(client, user_id, item_name, rarity, min_price, threshold)
+                                # Предотвращение дубликатов уведомлений
+                                if s_id not in triggered_snipers_cache:
+                                    await send_telegram_notification(client, user_id, item_name, rarity, min_price, threshold)
+                                    triggered_snipers_cache.add(s_id)
+                            else:
+                                # Если цена выросла обратно, сбрасываем флаг для следующего падения
+                                triggered_snipers_cache.discard(s_id)
 
                         await asyncio.sleep(0.3)
                 else:
@@ -210,20 +205,13 @@ async def sniper_monitoring_worker():
 
             await asyncio.sleep(10)
 
-
 async def general_collector_worker(tracked_items: list[dict]):
-    """Фоновый воркер: непрерывный обход всей базы артефактов."""
     async with httpx.AsyncClient() as client:
         while True:
-            print(f"\n--- [Общий сборщик] Старт фонового прохода по базе ({len(tracked_items)} предметов) ---", flush=True)
             total = len(tracked_items)
-            
             for idx, item in enumerate(tracked_items, start=1):
                 min_price, total_lots = await fetch_auction_price_direct(client, item["item_id"], item["rarity"], item["variant"])
                 
-                price_formatted = f"{min_price:,.0f} руб." if min_price is not None else "Нет лотов"
-                print(f"🔍 [{idx}/{total}] {item['item_name']} ({item['rarity']}) | Мин. цена: {price_formatted}", flush=True)
-
                 if min_price is not None:
                     try:
                         payload = {
@@ -242,9 +230,7 @@ async def general_collector_worker(tracked_items: list[dict]):
 
                 await asyncio.sleep(0.2)
 
-            print(f"--- [Общий сборщик] Проход завершен. Пауза 60 секунд ---", flush=True)
             await asyncio.sleep(60)
-
 
 async def main():
     tracked_items = initialize_items_database()
@@ -254,7 +240,6 @@ async def main():
         sniper_monitoring_worker(),
         general_collector_worker(tracked_items)
     )
-
 
 if __name__ == "__main__":
     asyncio.run(main())
