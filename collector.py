@@ -99,19 +99,25 @@ def load_valuable_items() -> list[dict]:
         if not folder_path.exists():
             continue
 
-        json_files = list(folder_path.rglob("*.json"))
-        print(f"📄 Проверяем JSON-файлы в категории '{cat_folder}': {len(json_files)}")
+        # Ищем подпапки (biochemical, electrophysical, gravity, thermal и т.д.)
+        subfolders = [x for x in folder_path.iterdir() if x.is_dir()]
+        
+        json_files = []
+        for sub in subfolders:
+            if sub.name == "_variants":
+                continue
+            for file_path in sub.glob("*.json"):
+                json_files.append(file_path)
+
+        print(f"📄 Найдено основных JSON-файлов предметов в категории '{cat_folder}': {len(json_files)}")
 
         success_count = 0
         for path in json_files:
-            if "_variants" in path.parts:
-                continue
-                
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     
-                    item_id = data.get("id") or data.get("key") or path.stem
+                    item_id = path.stem
                     
                     name = None
                     name_block = data.get("name")
@@ -134,10 +140,12 @@ def load_valuable_items() -> list[dict]:
                     })
                     success_count += 1
             except Exception as e:
+                print(f"⚠️ Ошибка чтения {path.name}: {e}")
                 continue
                 
-        print(f"✅ Успешно обработано предметов в категории '{cat_folder}': {success_count}")
+        print(f"✅ Успешно загружено предметов в категории '{cat_folder}': {success_count}")
         
+    print(f"📦 Итого сформировано элементов в списке: {len(items_list)}")
     return items_list
 
 
