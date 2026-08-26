@@ -32,11 +32,47 @@ QUALITY_MAP = {
 
 KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
-DEBUG_LOT_LOGGED = False
+
+def extract_rarity_from_json(data: dict, file_path: Path) -> str:
+    """Точное определение редкости предмета из JSON базы данных STALCRAFT"""
+    try:
+        json_str = json.dumps(data, ensure_ascii=False)
+
+        # 1. Поиск прямых указаний редкости в тексте JSON (от высших к низшим)
+        non_common_rarities = ["Легендарный", "Исключительный", "Редкий", "Особый", "Необычный"]
+        for rarity in non_common_rarities:
+            if f'"{rarity}"' in json_str or f' {rarity}' in json_str or f'{rarity} ' in json_str:
+                return rarity
+
+        # 2. Проверка по цветовым HEX-кодам и идентификаторам качества EXBO DB
+        color = str(data.get("color", "")).upper()
+        if "20AF32" in color or "17B036" in color or "UNCOMMON" in color:
+            return "Необычный"
+        if "0E87EB" in color or "2196F3" in color or "SPECIAL" in color:
+            return "Особый"
+        if "B026FF" in color or "A335EE" in color or "RARE" in color:
+            return "Редкий"
+        if "FF8000" in color or "FF6000" in color or "EXCEPTIONAL" in color:
+            return "Исключительный"
+        if "E02020" in color or "FF3838" in color or "LEGENDARY" in color:
+            return "Легендарный"
+
+        # 3. Проверка пути файла
+        path_str = str(file_path).lower()
+        if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
+        if "special" in path_str or "особ" in path_str: return "Особый"
+        if "rare" in path_str or "редк" in path_str: return "Редкий"
+        if "exceptional" in path_str or "исключ" in path_str: return "Исключительный"
+        if "legendary" in path_str or "легенд" in path_str: return "Легендарный"
+
+    except Exception:
+        pass
+
+    return "Обычный"
 
 
 def extract_lot_rarity(lot: dict, default_rarity: str = "Обычный") -> str:
-    """Глубокий поиск редкости лота по всем возможным вложенным объектам и строкам"""
+    """Извлечение редкости из лота (если в лоте переданы параметры качества)"""
     if not isinstance(lot, dict):
         return default_rarity
 
@@ -50,21 +86,9 @@ def extract_lot_rarity(lot: dict, default_rarity: str = "Обычный") -> str
     dicts_to_search = []
     if isinstance(additional, dict):
         dicts_to_search.append(additional)
-    elif isinstance(additional, list):
-        for el in additional:
-            if isinstance(el, dict):
-                dicts_to_search.append(el)
-
     dicts_to_search.append(lot)
 
-    item_dict = lot.get("item")
-    if isinstance(item_dict, dict):
-        dicts_to_search.append(item_dict)
-        item_add = item_dict.get("additional")
-        if isinstance(item_add, dict):
-            dicts_to_search.append(item_add)
-
-    target_keys = ["qlt", "quality", "rarity", "tier", "grade", "quality_tier"]
+    target_keys = ["qlt", "quality", "rarity", "tier"]
     for d in dicts_to_search:
         for k in target_keys:
             if k in d and d[k] is not None:
@@ -80,63 +104,7 @@ def extract_lot_rarity(lot: dict, default_rarity: str = "Обычный") -> str
                 if v_str in KNOWN_RARITIES:
                     return v_str
 
-                v_upper = v_str.upper()
-                if "UNCOMMON" in v_upper: return "Необычный"
-                if "SPECIAL" in v_upper: return "Особый"
-                if "RARE" in v_upper: return "Редкий"
-                if "EXCEPTIONAL" in v_upper: return "Исключительный"
-                if "LEGENDARY" in v_upper: return "Легендарный"
-
     return default_rarity
-
-
-def extract_rarity_from_json(data: dict, file_path: Path) -> str:
-    """Извлечение дефолтной редкости из файла шаблона предмета"""
-    try:
-        if isinstance(data, dict):
-            info_blocks = data.get("infoBlocks")
-            if isinstance(info_blocks, list):
-                for block in info_blocks:
-                    if isinstance(block, dict):
-                        elements = block.get("elements")
-                        if isinstance(elements, list):
-                            for el in elements:
-                                if isinstance(el, dict):
-                                    key_dict = el.get("key")
-                                    if isinstance(key_dict, dict):
-                                        key_str = str(key_dict.get("key", ""))
-                                        if "quality" in key_str or "rarity" in key_str:
-                                            lines = key_dict.get("lines")
-                                            if isinstance(lines, dict):
-                                                ru_text = lines.get("ru", "")
-                                                if ru_text in KNOWN_RARITIES:
-                                                    return ru_text
-
-                                    val_dict = el.get("value")
-                                    if isinstance(val_dict, dict):
-                                        lines = val_dict.get("lines")
-                                        if isinstance(lines, dict):
-                                            ru_val = lines.get("ru", "")
-                                            if ru_val in KNOWN_RARITIES:
-                                                return ru_val
-
-            color = str(data.get("color", "")).upper()
-            if "UNCOMMON" in color: return "Необычный"
-            if "SPECIAL" in color: return "Особый"
-            if "RARE" in color: return "Редкий"
-            if "EXCEPTIONAL" in color: return "Исключительный"
-            if "LEGENDARY" in color: return "Легендарный"
-    except Exception:
-        pass
-
-    path_str = str(file_path).lower()
-    if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
-    if "special" in path_str or "особ" in path_str: return "Особый"
-    if "rare" in path_str or "редк" in path_str: return "Редкий"
-    if "exceptional" in path_str or "исключ" in path_str: return "Исключительный"
-    if "legendary" in path_str or "легенд" in path_str: return "Легендарный"
-
-    return "Обычный"
 
 
 def load_valuable_items() -> list[dict]:
@@ -183,6 +151,7 @@ def load_valuable_items() -> list[dict]:
         print(f"📄 Найдено основных JSON-файлов предметов в категории '{cat_folder}': {len(json_files)}")
 
         success_count = 0
+        rarity_counts = {}
         for path in json_files:
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -206,6 +175,7 @@ def load_valuable_items() -> list[dict]:
                         name = item_id
 
                     default_rarity = extract_rarity_from_json(data, path)
+                    rarity_counts[default_rarity] = rarity_counts.get(default_rarity, 0) + 1
 
                     items_list.append({
                         "id": item_id,
@@ -219,6 +189,7 @@ def load_valuable_items() -> list[dict]:
                 continue
 
         print(f"✅ Успешно загружено предметов в категории '{cat_folder}': {success_count}")
+        print(f"📊 Распределение редкостей в БД: {rarity_counts}")
 
     print(f"📦 Итого сформировано элементов в списке: {len(items_list)}")
     return items_list
@@ -284,7 +255,6 @@ def check_user_snipers(item_id: str, rarity_name: str, current_price: float, tot
 
 
 def collect_iteration(items: list[dict]):
-    global DEBUG_LOT_LOGGED
     if not items:
         return
 
@@ -313,10 +283,6 @@ def collect_iteration(items: list[dict]):
 
                     if not lots:
                         continue
-
-                    if not DEBUG_LOT_LOGGED and lots:
-                        print(f"🔎 DEBUG LOT RAW DATA: {json.dumps(lots[0], ensure_ascii=False)}")
-                        DEBUG_LOT_LOGGED = True
 
                     rarity_data = {}
                     for lot in lots:
