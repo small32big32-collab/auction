@@ -9,21 +9,19 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 
-# --- Настройки контактов и документов ---
 SUPPORT_TG = "https://t.me/ungdaddy"
 PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
 PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
 
-ITEMS_PER_PAGE = 10  # Количество предметов на одной странице каталога
+ITEMS_PER_PAGE = 10
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- Состояния FSM ---
 class AuthState(StatesGroup):
     waiting_for_key = State()
 
@@ -33,7 +31,6 @@ class SniperState(StatesGroup):
 
 user_sessions = {}
 
-# --- Инлайн-клавиатуры ---
 def get_buy_options_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ Оплатить Telegram Stars", callback_data="buy_stars")],
@@ -91,7 +88,6 @@ async def send_main_menu(message_or_callback, text_prefix=""):
     else:
         await message_or_callback.answer(text, reply_markup=markup, parse_mode="Markdown")
 
-# --- Старт и авторизация ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -139,7 +135,6 @@ async def process_license_key(message: types.Message, state: FSMContext):
         except Exception as e:
             await message.answer(f"⚠️ Ошибка подключения к серверу: {e}")
 
-# --- Оплата ---
 @dp.callback_query(F.data == "open_buy_menu")
 async def open_buy_menu_handler(callback: types.CallbackQuery):
     await callback.message.edit_text(
@@ -177,7 +172,6 @@ async def successful_payment_handler(message: types.Message):
         parse_mode="Markdown"
     )
 
-# --- Навигация ---
 @dp.callback_query(F.data == "menu_change_key")
 async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -204,7 +198,6 @@ async def to_main_menu_handler(callback: types.CallbackQuery, state: FSMContext)
         await send_main_menu(callback)
     await callback.answer()
 
-# --- Каталог и Выбор Предметов (с Пагинацией) ---
 @dp.callback_query(F.data.startswith("menu_catalog"))
 async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
@@ -215,7 +208,6 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         await callback.answer("⚠️ Сначала введите ключ доступа!", show_alert=True)
         return
 
-    # Парсим текущую страницу из callback_data (формат: menu_catalog:page или просто menu_catalog)
     parts = callback.data.split(":")
     page = int(parts[1]) if len(parts) > 1 else 0
 
@@ -237,34 +229,28 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         await callback.answer()
         return
 
-    # 1. Фильтруем уникальные предметы по item_id
     unique_items = []
     seen_ids = set()
     for item in items:
-        i_id = item["item_id"]
-        if i_id not in seen_ids:
+        i_id = item.get("item_id") or item.get("id")
+        if i_id and i_id not in seen_ids:
             seen_ids.add(i_id)
             unique_items.append((i_id, item.get("name", i_id)))
 
-    # 2. Вычисляем данные для пагинации
     total_items = len(unique_items)
-    total_pages = (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    
-    # Ограничиваем номер страницы
+    total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
     
     start_idx = page * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
     page_items = unique_items[start_idx:end_idx]
 
-    # 3. Собираем клавиатуру
     builder = InlineKeyboardBuilder()
     for i_id, name in page_items:
         builder.button(text=f"🔮 {name}", callback_data=f"select_item:{i_id}")
 
     builder.adjust(1)
 
-    # 4. Добавляем кнопки переключения страниц
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"menu_catalog:{page - 1}"))
@@ -297,7 +283,7 @@ async def select_item_info(callback: types.CallbackQuery):
             )
             items = res.json().get("data", [])
             for item in items:
-                if item["item_id"] == item_id:
+                if item.get("item_id") == item_id or item.get("id") == item_id:
                     item_name = item.get("name", item_id)
                     break
         except Exception:
@@ -334,15 +320,28 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
                 timeout=5.0
             )
             items = res.json().get("data", [])
+            target_item = None
+            
+            # Поиск с учетом разного наименования полей
             for item in items:
-                if item["item_id"] == item_id and item.get("rarity") == rarity:
-                    item_name = item.get("name", item_id)
-                    min_price = item.get("min_price", item.get("price", 0))
+                curr_id = item.get("item_id") or item.get("id")
+                if (curr_id == item_id or item.get("name") == item_id) and item.get("rarity") == rarity:
+                    target_item = item
                     break
-                elif item["item_id"] == item_id:
-                    item_name = item.get("name", item_id)
-        except Exception:
-            pass
+            
+            if not target_item:
+                for item in items:
+                    curr_id = item.get("item_id") or item.get("id")
+                    if curr_id == item_id or item.get("name") == item_id:
+                        item_name = item.get("name", item_id)
+                        min_price = item.get("min_price", item.get("price", 0))
+                        break
+            else:
+                item_name = target_item.get("name", item_id)
+                min_price = target_item.get("min_price", target_item.get("price", 0))
+
+        except Exception as e:
+            print(f"Error fetching item price: {e}")
 
     price_str = f"{min_price:,.0f} руб." if min_price else "Нет данных"
 
@@ -366,7 +365,7 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
 async def set_sniper_price(message: types.Message, state: FSMContext):
     clean_text = message.text.replace(" ", "").replace(",", "")
     if not clean_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите корректное число.")
+        await message.answer("⚠️ Пожалуйста, введите корректное целое число.")
         return
 
     price = float(clean_text)
@@ -388,7 +387,7 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
     async with httpx.AsyncClient() as client:
         try:
             res = await client.post(f"{API_BASE_URL}/snipers", json=payload, timeout=5.0)
-            if res.status_code == 200:
+            if res.status_code in [200, 201]:
                 await message.answer(
                     f"✅ **Снайпер установлен!**\n"
                     f"Предмет: **{item_name}** ({data['target_rarity']})\n"
@@ -403,7 +402,6 @@ async def set_sniper_price(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# --- Снайперы ---
 @dp.callback_query(F.data == "menu_snipers")
 async def show_user_snipers_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -492,7 +490,7 @@ async def process_new_price(message: types.Message, state: FSMContext):
     clean_text = message.text.replace(" ", "").replace(",", "")
 
     if not clean_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите число.")
+        await message.answer("⚠️ Пожалуйста, введите корректное число.")
         return
 
     new_price = float(clean_text)
@@ -509,7 +507,6 @@ async def process_new_price(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Цена обновлена: **{new_price:,.0f} руб.**", parse_mode="Markdown")
     await send_main_menu(message)
 
-# --- Точка входа ---
 async def main():
     print("🚀 Запуск Telegram-бота Stalzone...")
     await dp.start_polling(bot)
