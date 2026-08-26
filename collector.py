@@ -14,19 +14,29 @@ DB_BASE_DIR = os.getenv("DB_BASE_DIR", "/app/stalzone-database/ru/items")
 # Инициализация Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Все 6 градаций редкости артефактов
-ALL_RARITIES = [
-    "Обычный",
-    "Необычный",
-    "Особый",
-    "Редкий",
-    "Исключительный",
-    "Легендарный"
-]
+# Маппинг значения поля "color" из JSON в русское название редкости
+COLOR_MAP = {
+    "DEFAULT": "Обычный",
+    "UNCOMMON": "Необычный",
+    "SPECIAL": "Особый",
+    "RARE": "Редкий",
+    "EXCLUSIVE": "Исключительный",
+    "LEGENDARY": "Легендарный",
+    # Запасные значения, если в JSON используются названия цветов
+    "WHITE": "Обычный",
+    "GREEN": "Необычный",
+    "BLUE": "Особый",
+    "PURPLE": "Редкий",
+    "PINK": "Исключительный",
+    "MAGENTA": "Исключительный",
+    "RED": "Легендарный",
+}
+
+ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
 
 def initialize_items_database():
-    """Рекурсивно сканирует директорию с базой данных и формирует список для отслеживания всех 6 редкостей."""
+    """Сканирует JSON-файлы предметов и определяет их редкость по полю 'color'."""
     print("🚀 Старт процесса инициализации коллектора...")
     print(f"🔍 Рабочая директория: {os.getcwd()}")
     print(f"🔍 Директория файла: {os.path.dirname(os.path.abspath(__file__))}")
@@ -38,8 +48,6 @@ def initialize_items_database():
     print(f"✅ База данных найдена: {DB_BASE_DIR}")
 
     raw_items = []
-    
-    # Рекурсивный поиск всех .json файлов во всех подпапках DB_BASE_DIR
     for root, _, files in os.walk(DB_BASE_DIR):
         for filename in files:
             if filename.endswith(".json"):
@@ -47,41 +55,52 @@ def initialize_items_database():
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                        
-                        # Проверяем категорию (если поле присутствуют в JSON)
                         category = data.get("category") or data.get("type", "")
                         
-                        # Если категория артефакт или файл находится в папке artefact / не размечен
                         if not category or category in ["artefact", "artifacts", "Артефакт"] or "artefact" in root.lower():
                             raw_items.append(data)
                 except Exception as e:
                     print(f"⚠️ Ошибка чтения файла {filename}: {e}")
 
-    print(f"📄 Найдено и успешно загружено предметов в категории 'artefact': {len(raw_items)}")
+    print(f"📄 Загружено артефактов из JSON: {len(raw_items)}")
 
     tracked_items = []
     rarity_stats = {r: 0 for r in ALL_RARITIES}
 
     for item in raw_items:
         item_id = item.get("id") or item.get("item_id")
-        
-        # Получаем наименование предмета из структуры локализации или поля name
+        if not item_id:
+            continue
+
+        # Локализованное название предмета
         if isinstance(item.get("name"), dict):
             item_name = item.get("name", {}).get("lines", {}).get("ru", item_id)
         else:
             item_name = item.get("name", item_id)
 
-        if not item_id:
-            continue
+        # Определение редкости по полю "color"
+        raw_color = str(item.get("color", "")).upper()
+        detected_rarity = COLOR_MAP.get(raw_color)
 
-        for rarity in ALL_RARITIES:
+        if detected_rarity:
+            # Если поле color явно задает конкретную редкость
             tracked_items.append({
                 "item_id": item_id,
                 "item_name": item_name,
                 "category": "artefact",
-                "rarity": rarity
+                "rarity": detected_rarity
             })
-            rarity_stats[rarity] += 1
+            rarity_stats[detected_rarity] += 1
+        else:
+            # Если у предмета нет цвета (DEFAULT) или он выбивается во всех редкостях
+            for rarity in ALL_RARITIES:
+                tracked_items.append({
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "category": "artefact",
+                    "rarity": rarity
+                })
+                rarity_stats[rarity] += 1
 
     print(f"📊 Распределение редкостей в БД: {rarity_stats}")
     print(f"📌 Итого сформировано элементов в списке: {len(tracked_items)}")
@@ -103,10 +122,13 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
             if not lots:
                 return None, 0
 
-            buyout_prices = [lot.get("buyout_price") or lot.get("price") for lot in lots if lot.get("buyout_price") or lot.get("price")]
+            buyout_prices = [
+                lot.get("buyout_price") or lot.get("price") 
+                for lot in lots 
+                if lot.get("buyout_price") or lot.get("price")
+            ]
             if buyout_prices:
                 return min(buyout_prices), len(lots)
-
     except Exception:
         pass
 
@@ -114,7 +136,7 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
 
 
 async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: str, min_price: float, total_lots: int):
-    """Записывает точечный снимок цен в таблицу price_history."""
+    """Записывает снимок цен в таблицу price_history."""
     try:
         payload = {
             "item_id": item_id,
@@ -131,7 +153,7 @@ async def save_to_supabase(item_id: str, item_name: str, rarity: str, category: 
 
 
 async def run_collector_cycle(tracked_items: list[dict]):
-    """Запускает один полный круг парсинга по всем предметам и редкостям."""
+    """Запускает один круг сбора по всем предметам."""
     now_str = datetime.now().strftime("%H:%M:%S")
     print(f"\n--- Сбор цен по выкупу (Артефакты) [{now_str}] ---")
 
