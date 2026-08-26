@@ -126,9 +126,9 @@ def initialize_items_database():
             item_name = item.get("name", item_id)
 
         item_variants = parse_variants(item)
-        raw_color = str(item.get("color", "")).upper()
-        detected_rarity = COLOR_MAP.get(raw_color)
-        rarities_to_apply = [detected_rarity] if detected_rarity else ALL_RARITIES
+
+        # Всегда генерируем комбинации для всех 6 редкостей каждого артефакта
+        rarities_to_apply = ALL_RARITIES
 
         for rarity in rarities_to_apply:
             for variant in item_variants:
