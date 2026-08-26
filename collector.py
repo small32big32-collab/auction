@@ -33,8 +33,36 @@ QUALITY_MAP = {
 KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
 
+def extract_lot_rarity(lot: dict, default_rarity: str = "Обычный") -> str:
+    """Извлекает редкость конкретного лота аукциона с проверкой дополнительного блока additional"""
+    if not isinstance(lot, dict):
+        return default_rarity
+
+    possible_sources = [
+        lot.get("additional"),
+        lot,
+        lot.get("item"),
+        lot.get("item", {}).get("additional") if isinstance(lot.get("item"), dict) else None,
+    ]
+
+    for source in possible_sources:
+        if isinstance(source, dict):
+            for key in ["qlt", "quality", "rarity", "tier"]:
+                val = source.get(key)
+                if val is not None:
+                    try:
+                        q_int = int(val)
+                        if q_int in QUALITY_MAP:
+                            return QUALITY_MAP[q_int]
+                    except (ValueError, TypeError):
+                        if str(val) in KNOWN_RARITIES:
+                            return str(val)
+
+    return default_rarity
+
+
 def extract_rarity_from_json(data: dict, file_path: Path) -> str:
-    """Безопасное извлечение редкости артефакта с защитой от типов float/str в блоках"""
+    """Извлечение дефолтной редкости из файла шаблона предмета"""
     try:
         if isinstance(data, dict):
             info_blocks = data.get("infoBlocks")
@@ -115,7 +143,7 @@ def load_valuable_items() -> list[dict]:
             continue
 
         subfolders = [x for x in folder_path.iterdir() if x.is_dir()]
-        
+
         json_files = []
         for sub in subfolders:
             if sub.name == "_variants":
@@ -130,12 +158,12 @@ def load_valuable_items() -> list[dict]:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    
+
                     if not isinstance(data, dict):
                         continue
-                    
+
                     item_id = path.stem
-                    
+
                     name = None
                     name_block = data.get("name")
                     if isinstance(name_block, dict):
@@ -144,7 +172,7 @@ def load_valuable_items() -> list[dict]:
                             name = lines.get("ru") or lines.get("en")
                     elif isinstance(name_block, str):
                         name = name_block
-                    
+
                     if not name:
                         name = item_id
 
@@ -160,9 +188,9 @@ def load_valuable_items() -> list[dict]:
             except Exception as e:
                 print(f"⚠️ Ошибка чтения {path.name}: {e}")
                 continue
-                
+
         print(f"✅ Успешно загружено предметов в категории '{cat_folder}': {success_count}")
-        
+
     print(f"📦 Итого сформировано элементов в списке: {len(items_list)}")
     return items_list
 
@@ -211,7 +239,7 @@ def check_user_snipers(item_id: str, rarity_name: str, current_price: float, tot
             if current_price <= threshold:
                 user_id = sniper["user_id"]
                 item_name = sniper["item_name"]
-                
+
                 msg = (
                     f"🔥 **ВНИМАНИЕ! СНАЙПЕР СРАБОТАЛ!** 🔥\n\n"
                     f"📦 Предмет: *{item_name}* (`{rarity_name}`)\n"
@@ -219,7 +247,7 @@ def check_user_snipers(item_id: str, rarity_name: str, current_price: float, tot
                     f"📊 Доступно лотов: {total_lots}\n"
                     f"🕒 Время: `{time.strftime('%Y-%m-%d %H:%M')}`"
                 )
-                
+
                 send_telegram_notification(user_id, msg)
                 supabase.table("user_snipers").delete().eq("id", sniper["id"]).execute()
     except Exception as e:
@@ -258,18 +286,7 @@ def collect_iteration(items: list[dict]):
 
                     rarity_data = {}
                     for lot in lots:
-                        qlt = (
-                            lot.get("qlt")
-                            if lot.get("qlt") is not None
-                            else lot.get("quality")
-                        )
-                        if qlt is None and "item" in lot:
-                            qlt = lot["item"].get("qlt") or lot["item"].get("quality")
-
-                        if qlt is not None:
-                            rarity_name = QUALITY_MAP.get(int(qlt), item.get("default_rarity", "Обычный"))
-                        else:
-                            rarity_name = item.get("default_rarity", "Обычный")
+                        rarity_name = extract_lot_rarity(lot, item.get("default_rarity", "Обычный"))
 
                         price = lot.get("buyoutPrice") or lot.get("startPrice", 0)
                         if price > 0:
@@ -289,7 +306,7 @@ def collect_iteration(items: list[dict]):
                             "total_lots": info["count"],
                         }
                         supabase.table("price_history").insert(row).execute()
-                        
+
                         print(
                             f"[+] [{item['category']}] {item['name']} ({r_name}): выкуп"
                             f" {info['min_price']:,} руб."
