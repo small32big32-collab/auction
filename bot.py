@@ -24,7 +24,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Локальная сессия пользователей для лицензионных ключей
+# Локальная сессия пользователей для ключей
 user_sessions = {}
 
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
@@ -66,12 +66,16 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
 
-    # Проверка наличия ключа доступа в базе
-    res = supabase.table("user_licenses").select("license_key").eq("user_id", user_id).execute()
-    if res.data and len(res.data) > 0:
-        user_sessions[user_id] = res.data[0]["license_key"]
-        await message.answer("👋 **Добро пожаловать в Stalzone Auction Sniper!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    else:
+    try:
+        # Ищем активный ключ, привязанный к telegram_id пользователя
+        res = supabase.table("licenses").select("key").eq("telegram_id", user_id).eq("is_active", True).execute()
+        if res.data and len(res.data) > 0:
+            user_sessions[user_id] = res.data[0]["key"]
+            await message.answer("👋 **Добро пожаловать в Stalzone Auction Sniper!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        else:
+            await state.set_state(SniperState.waiting_for_license)
+            await message.answer("🔑 **Введите ваш ключ доступа для активации бота:**", parse_mode="Markdown")
+    except Exception as e:
         await state.set_state(SniperState.waiting_for_license)
         await message.answer("🔑 **Введите ваш ключ доступа для активации бота:**", parse_mode="Markdown")
 
@@ -82,14 +86,16 @@ async def process_license_key(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
 
     try:
-        res = supabase.table("licenses").select("*").eq("key", license_key).execute()
+        # Проверяем, существует ли активный ключ
+        res = supabase.table("licenses").select("*").eq("key", license_key).eq("is_active", True).execute()
         if res.data and len(res.data) > 0:
-            supabase.table("user_licenses").upsert({"user_id": user_id, "license_key": license_key}).execute()
+            # Привязываем Telegram ID в колонку telegram_id
+            supabase.table("licenses").update({"telegram_id": user_id}).eq("key", license_key).execute()
             user_sessions[user_id] = license_key
             await state.clear()
             await message.answer("✅ **Ключ успешно активирован!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
         else:
-            await message.answer("❌ **Неверный ключ доступа.** Попробуйте ввести еще раз:")
+            await message.answer("❌ **Неверный или неактивный ключ доступа.** Попробуйте ввести еще раз:")
     except Exception as e:
         await message.answer(f"⚠️ Ошибка проверки ключа: {e}")
 
@@ -157,7 +163,6 @@ async def search_item_for_sniper(message: types.Message, state: FSMContext):
             res = await client.get(f"{API_BASE_URL}/items/{license_key}", params={"telegram_id": user_id}, timeout=5.0)
             items = res.json().get("data", [])
             
-            # Фильтрация по введенному имени
             matched = [
                 i for i in items 
                 if query in str(i.get("name", "")).lower() or query in str(i.get("item_id", "")).lower()
@@ -204,7 +209,6 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     item_name = item_id
     min_price = None
 
-    # 1. Попытка получить данные о предмете через бэкенд API
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE_URL}/items/{license_key}", params={"telegram_id": user_id}, timeout=5.0)
@@ -221,9 +225,7 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
         except Exception as e:
             logging.error(f"Ошибка получения имени через API: {e}")
 
-    # 2. Прямой поиск последней сохраненной минимальной цены в Supabase
     min_price = await fetch_latest_price_from_supabase(item_id, rarity)
-
     price_str = f"{min_price:,.0f} руб." if min_price and min_price > 0 else "Нет данных"
 
     await state.update_data(target_item_id=item_id, target_item_name=item_name, target_rarity=rarity)
@@ -274,7 +276,7 @@ async def process_price_and_save_sniper(message: types.Message, state: FSMContex
         builder.row(InlineKeyboardButton(text="⬅️ Главное меню", callback_data="to_main_menu"))
 
         await message.answer(
-            f"✅ **Снайпер успешно уставил цель!**\n\n"
+            f"✅ **Снайпер успешно установлен!**\n\n"
             f"📦 Предмет: **{item_name}** (`{rarity}`)\n"
             f"🎯 Порог срабатывания: **{threshold:,.0f} руб.**",
             reply_markup=builder.as_markup(),
