@@ -21,8 +21,6 @@ dp = Dispatcher()
 CATEGORY_NAMES = {
     "artifacts": "Артефакты",
     "Артефакт": "Артефакты",
-    "armor": "Броня",
-    "Броня": "Броня",
 }
 
 
@@ -45,6 +43,9 @@ async def show_main_menu(message_or_callback, edit=False, has_key=False):
     builder.button(text="📂 Каталог предметов", callback_data="back_to_cats")
     builder.button(text="🎯 Настроить снайпер цен", callback_data="sniper_menu")
     builder.button(text="🔑 Сменить ключ", callback_data="start_enter_key")
+    builder.button(text="💬 Техническая поддержка", url="https://t.me/ungdaddy")
+    builder.button(text="📄 Пользовательское соглашение", url="https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64")
+    builder.button(text="🔒 Политика конфиденциальности", url="https://telegra.ph/Politika-konfidencialnosti-08-25-84")
   else:
     builder.button(text="💳 Купить доступ (Тарифы)", callback_data="about_tariffs")
     builder.button(text="🔑 Ввести ключ", callback_data="start_enter_key")
