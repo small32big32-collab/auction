@@ -23,16 +23,6 @@ CATEGORY_NAMES = {
     "Артефакт": "Артефакты",
     "armor": "Броня",
     "Броня": "Броня",
-    "weapons": "Оружие",
-    "Оружие": "Оружие",
-    "containers": "Контейнер",
-    "Контейнер": "Контейнер",
-    "backpacks": "Рюкзак",
-    "Рюкзак": "Рюкзак",
-    "device": "Устройство",
-    "Устройство": "Устройство",
-    "weapon_modules": "Модуль",
-    "Модуль": "Модуль",
 }
 
 
@@ -58,7 +48,7 @@ async def show_main_menu(message_or_callback, edit=False, has_key=False):
   else:
     builder.button(text="💳 Купить доступ (Тарифы)", callback_data="about_tariffs")
     builder.button(text="🔑 Ввести ключ", callback_data="start_enter_key")
-    builder.button(text="💬 Техническая поддержка", url="https://t.me/your_support") # Ссылка на ваш аккаунт поддержки
+    builder.button(text="💬 Техническая поддержка", url="https://t.me/ungdaddy") # Ссылка на ваш аккаунт поддержки
     builder.button(text="📄 Пользовательское соглашение", url="https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64")
     builder.button(text="🔒 Политика конфиденциальности", url="https://telegra.ph/Politika-konfidencialnosti-08-25-84")
   
