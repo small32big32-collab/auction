@@ -1,305 +1,197 @@
 import os
 import asyncio
+import logging
 import httpx
+
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
+from supabase import create_client, Client
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 
-SUPPORT_TG = "https://t.me/ungdaddy"
-PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
-TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
-PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
-
-ITEMS_PER_PAGE = 10
+# Конфигурация окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://auction-production-a352.up.railway.app")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-class AuthState(StatesGroup):
-    waiting_for_key = State()
-
-class SniperState(StatesGroup):
-    waiting_for_price = State()
-    waiting_for_edit_price = State()
-
+# Локальная сессия пользователей для лицензионных ключей
 user_sessions = {}
 
-def get_buy_options_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Оплатить Telegram Stars", callback_data="buy_stars")],
-        [InlineKeyboardButton(text="💳 Оплатить через Platega", url=PLATEGA_PAY_URL)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="to_main_menu")]
-    ])
+ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
-def get_auth_inline_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Купить ключ", callback_data="open_buy_menu")],
-        [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_TG)],
-        [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
-        [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
-    ])
+class SniperState(StatesGroup):
+    waiting_for_license = State()
+    waiting_for_item_search = State()
+    waiting_for_price = State()
 
-def get_main_inline_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📂 Каталог предметов", callback_data="menu_catalog:0")],
-        [InlineKeyboardButton(text="🎯 Настроить снайпер цен", callback_data="menu_snipers")],
-        [InlineKeyboardButton(text="🛒 Купить ключ", callback_data="open_buy_menu")],
-        [InlineKeyboardButton(text="🔑 Сменить ключ", callback_data="menu_change_key")],
-        [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_TG)],
-        [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
-        [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
-    ])
 
-def get_rarity_keyboard(item_id: str):
-    rarities = [
-        ("⚪ Обычный", "Обычный"),
-        ("🟢 Необычный", "Необычный"),
-        ("🔵 Особый", "Особый"),
-        ("🟣 Редкий", "Редкий"),
-        ("🔴 Исключительный", "Исключительный"),
-        ("🟡 Легендарный", "Легендарный")
-    ]
+def get_main_keyboard():
     builder = InlineKeyboardBuilder()
-    for label, r_val in rarities:
-        builder.button(text=label, callback_data=f"setrarity:{item_id}:{r_val}")
-    
-    builder.adjust(2)
-    builder.row(InlineKeyboardButton(text="⬅️ Назад в каталог", callback_data="menu_catalog:0"))
+    builder.row(InlineKeyboardButton(text="🎯 Мои снайперы", callback_data="list_snipers"))
+    builder.row(InlineKeyboardButton(text="➕ Добавить снайпера", callback_data="add_sniper"))
     return builder.as_markup()
 
-async def send_main_menu(message_or_callback, text_prefix=""):
-    text = (
-        f"{text_prefix}"
-        "👋 **Stalzone Auction Bot**\n\n"
-        "Добро пожаловать! Инструмент для мониторинга и анализа цен аукциона артефактов.\n"
-        "Выберите нужный пункт меню ниже:"
-    )
-    markup = get_main_inline_menu()
-    
-    if isinstance(message_or_callback, types.CallbackQuery):
-        await message_or_callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
-    else:
-        await message_or_callback.answer(text, reply_markup=markup, parse_mode="Markdown")
+
+async def fetch_latest_price_from_supabase(item_id: str, rarity: str) -> float | None:
+    """Запрашивает свежую минимальную цену предмета прямо из Supabase."""
+    try:
+        res = (
+            supabase.table("price_history")
+            .select("min_buyout_price")
+            .eq("item_id", item_id)
+            .ilike("rarity", rarity)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if res.data and len(res.data) > 0:
+            return float(res.data[0]["min_buyout_price"])
+    except Exception as e:
+        logging.error(f"Ошибка запроса цены из Supabase: {e}")
+    return None
+
 
 @dp.message(CommandStart())
-async def start_cmd(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
-    if user_id in user_sessions:
-        await send_main_menu(message)
-        return
 
-    await state.set_state(AuthState.waiting_for_key)
-    await message.answer(
-        "🔑 **Авторизация в Stalzone**\n\n"
-        "Пожалуйста, введите ваш ключ доступа.\n"
-        "Если у вас нет ключа, вы можете приобрести его по кнопке ниже:",
-        reply_markup=get_auth_inline_menu(),
-        parse_mode="Markdown"
-    )
+    # Проверка наличия ключа доступа в базе
+    res = supabase.table("user_licenses").select("license_key").eq("user_id", user_id).execute()
+    if res.data and len(res.data) > 0:
+        user_sessions[user_id] = res.data[0]["license_key"]
+        await message.answer("👋 **Добро пожаловать в Stalzone Auction Sniper!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    else:
+        await state.set_state(SniperState.waiting_for_license)
+        await message.answer("🔑 **Введите ваш ключ доступа для активации бота:**", parse_mode="Markdown")
 
-@dp.message(AuthState.waiting_for_key)
+
+@dp.message(SniperState.waiting_for_license)
 async def process_license_key(message: types.Message, state: FSMContext):
     license_key = message.text.strip()
     user_id = message.from_user.id
 
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(
-                f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
-                timeout=5.0
-            )
-            if res.status_code == 200:
-                user_sessions[user_id] = license_key
-                await state.clear()
-                await send_main_menu(message, text_prefix="✅ **Авторизация успешна!**\n\n")
-            elif res.status_code == 403:
-                await message.answer(
-                    "⛔ **Этот ключ уже привязан к другому Telegram-аккаунту!**\n"
-                    "Введите другой ключ или приобретите новый:",
-                    reply_markup=get_auth_inline_menu(),
-                    parse_mode="Markdown"
-                )
-            else:
-                await message.answer(
-                    "❌ **Неверный или просроченный ключ.** Попробуйте ввести другой или купите новый:",
-                    reply_markup=get_auth_inline_menu()
-                )
-        except Exception as e:
-            await message.answer(f"⚠️ Ошибка подключения к серверу: {e}")
+    try:
+        res = supabase.table("licenses").select("*").eq("key", license_key).execute()
+        if res.data and len(res.data) > 0:
+            supabase.table("user_licenses").upsert({"user_id": user_id, "license_key": license_key}).execute()
+            user_sessions[user_id] = license_key
+            await state.clear()
+            await message.answer("✅ **Ключ успешно активирован!**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        else:
+            await message.answer("❌ **Неверный ключ доступа.** Попробуйте ввести еще раз:")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка проверки ключа: {e}")
 
-@dp.callback_query(F.data == "open_buy_menu")
-async def open_buy_menu_handler(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "💳 **Выберите удобный способ оплаты ключа доступа:**\n\n"
-        "• **Telegram Stars** — оплата прямо внутри мессенджера.\n"
-        "• **Platega** — оплата банковскими картами и СБП.",
-        reply_markup=get_buy_options_keyboard(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "buy_stars")
-async def send_stars_invoice(callback: types.CallbackQuery):
-    prices = [LabeledPrice(label="Лицензионный ключ (30 дней)", amount=250)]
-    await callback.message.answer_invoice(
-        title="Ключ доступа Stalzone",
-        description="Подписка на мониторинг аукциона на 30 дней",
-        payload="license_key_30_days",
-        currency="XTR",
-        prices=prices
-    )
-    await callback.answer()
-
-@dp.pre_checkout_query()
-async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@dp.message(F.successful_payment)
-async def successful_payment_handler(message: types.Message):
-    new_key = "STALZONE-STARS-KEY-DEMO"
-    await message.answer(
-        f"🎉 **Оплата успешно завершена!**\n\n"
-        f"Ваш ключ доступа: `{new_key}`\n\n"
-        f"Отправьте этот ключ в чат для активации доступа.",
-        parse_mode="Markdown"
-    )
-
-@dp.callback_query(F.data == "menu_change_key")
-async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    user_sessions.pop(user_id, None)
-    await state.set_state(AuthState.waiting_for_key)
-    await callback.message.edit_text(
-        "🔑 Введите новый ключ доступа:",
-        reply_markup=get_auth_inline_menu(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
 
 @dp.callback_query(F.data == "to_main_menu")
-async def to_main_menu_handler(callback: types.CallbackQuery, state: FSMContext):
+async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    user_id = callback.from_user.id
-    if user_id not in user_sessions:
-        await callback.message.edit_text(
-            "🔑 **Авторизация в Stalzone**\n\nПожалуйста, введите ваш ключ доступа:",
-            reply_markup=get_auth_inline_menu(),
-            parse_mode="Markdown"
-        )
-    else:
-        await send_main_menu(callback)
+    await callback.message.edit_text("🎯 **Главное меню:**", reply_markup=get_main_keyboard(), parse_mode="Markdown")
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("menu_catalog"))
-async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
+
+@dp.callback_query(F.data == "list_snipers")
+async def list_snipers(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    license_key = user_sessions.get(user_id)
-
-    if not license_key:
-        await callback.answer("⚠️ Сначала введите ключ доступа!", show_alert=True)
-        return
-
-    parts = callback.data.split(":")
-    page = int(parts[1]) if len(parts) > 1 else 0
-
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(
-                f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
-                timeout=5.0
-            )
-            items = res.json().get("data", [])
-        except Exception as e:
-            await callback.message.answer(f"⚠️ Ошибка загрузки каталога: {e}")
-            await callback.answer()
-            return
-
-    if not items:
-        await callback.message.answer("📦 Каталог предметов пуст.")
-        await callback.answer()
-        return
-
-    unique_items = []
-    seen_ids = set()
-    for item in items:
-        i_id = item.get("item_id") or item.get("id")
-        if i_id and i_id not in seen_ids:
-            seen_ids.add(i_id)
-            unique_items.append((i_id, item.get("name", i_id)))
-
-    total_items = len(unique_items)
-    total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-    
-    start_idx = page * ITEMS_PER_PAGE
-    end_idx = start_idx + ITEMS_PER_PAGE
-    page_items = unique_items[start_idx:end_idx]
+    res = supabase.table("user_snipers").select("*").eq("user_id", user_id).execute()
+    snipers = res.data or []
 
     builder = InlineKeyboardBuilder()
-    for i_id, name in page_items:
-        builder.button(text=f"🔮 {name}", callback_data=f"select_item:{i_id}")
 
-    builder.adjust(1)
+    if not snipers:
+        text = "🎯 **У вас пока нет активных снайперов.**"
+    else:
+        text = "🎯 **Ваши активные снайперы:**\n\n"
+        for s in snipers:
+            text += f"📦 **{s.get('item_name')}** (`{s.get('rarity')}`)\n🎯 Порог: `{float(s.get('threshold', 0)):,.0f} руб.`\n\n"
+            builder.row(InlineKeyboardButton(text=f"❌ Удалить {s.get('item_name')}", callback_data=f"del_sniper:{s.get('id')}"))
 
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"menu_catalog:{page - 1}"))
-    if page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"menu_catalog:{page + 1}"))
+    builder.row(InlineKeyboardButton(text="➕ Добавить снайпера", callback_data="add_sniper"))
+    builder.row(InlineKeyboardButton(text="⬅️ Главное меню", callback_data="to_main_menu"))
 
-    if nav_buttons:
-        builder.row(*nav_buttons)
-
-    builder.row(InlineKeyboardButton(text="⬅️ В главное меню", callback_data="to_main_menu"))
-
-    page_text = f"📂 **Выберите предмет из каталога (Стр. {page + 1}/{total_pages}):**"
-    
-    await callback.message.edit_text(page_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("select_item:"))
-async def select_item_info(callback: types.CallbackQuery):
-    item_id = callback.data.split(":")[1]
-    user_id = callback.from_user.id
-    license_key = user_sessions.get(user_id)
 
-    item_name = item_id
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(
-                f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
-                timeout=5.0
-            )
-            items = res.json().get("data", [])
-            for item in items:
-                if item.get("item_id") == item_id or item.get("id") == item_id:
-                    item_name = item.get("name", item_id)
-                    break
-        except Exception:
-            pass
+@dp.callback_query(F.data.startswith("del_sniper:"))
+async def delete_sniper(callback: types.CallbackQuery):
+    sniper_id = callback.data.split(":")[1]
+    supabase.table("user_snipers").delete().eq("id", sniper_id).execute()
+    await callback.answer("✅ Снайпер удален!")
+    await list_snipers(callback)
 
-    text = (
-        f"🔮 **Предмет:** {item_name}\n\n"
-        f"Выберите **редкость** предмета, чтобы узнать текущую цену и настроить снайпер:"
-    )
 
+@dp.callback_query(F.data == "add_sniper")
+async def start_add_sniper(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(SniperState.waiting_for_item_search)
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="to_main_menu"))
+    
     await callback.message.edit_text(
-        text, 
-        reply_markup=get_rarity_keyboard(item_id), 
+        "🔍 **Введите название предмета (или его часть) для поиска:**", 
+        reply_markup=builder.as_markup(), 
         parse_mode="Markdown"
     )
     await callback.answer()
+
+
+@dp.message(SniperState.waiting_for_item_search)
+async def search_item_for_sniper(message: types.Message, state: FSMContext):
+    query = message.text.strip().lower()
+    user_id = message.from_user.id
+    license_key = user_sessions.get(user_id)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(f"{API_BASE_URL}/items/{license_key}", params={"telegram_id": user_id}, timeout=5.0)
+            items = res.json().get("data", [])
+            
+            # Фильтрация по введенному имени
+            matched = [
+                i for i in items 
+                if query in str(i.get("name", "")).lower() or query in str(i.get("item_id", "")).lower()
+            ]
+
+            if not matched:
+                await message.answer("❌ Предметы не найдены. Попробуйте ввести другое название:")
+                return
+
+            builder = InlineKeyboardBuilder()
+            for item in matched[:10]:
+                item_id = item.get("item_id") or item.get("id")
+                item_name = item.get("name", item_id)
+                builder.row(InlineKeyboardButton(text=item_name, callback_data=f"select_item:{item_id}"))
+
+            builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="to_main_menu"))
+            await message.answer("📦 **Выберите предмет из списка:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+        except Exception as e:
+            await message.answer(f"⚠️ Ошибка поиска: {e}")
+
+
+@dp.callback_query(F.data.startswith("select_item:"))
+async def select_item_rarity(callback: types.CallbackQuery):
+    item_id = callback.data.split(":")[1]
+    builder = InlineKeyboardBuilder()
+    
+    for r in ALL_RARITIES:
+        builder.row(InlineKeyboardButton(text=r, callback_data=f"setrarity:{item_id}:{r}"))
+    
+    builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="to_main_menu"))
+    await callback.message.edit_text("✨ **Выберите редкость предмета:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("setrarity:"))
 async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMContext):
@@ -310,40 +202,29 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     license_key = user_sessions.get(user_id)
 
     item_name = item_id
-    min_price = 0
+    min_price = None
 
+    # 1. Попытка получить данные о предмете через бэкенд API
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(
-                f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
-                timeout=5.0
-            )
+            res = await client.get(f"{API_BASE_URL}/items/{license_key}", params={"telegram_id": user_id}, timeout=5.0)
             items = res.json().get("data", [])
-            target_item = None
             
-            # Поиск с учетом разного наименования полей
+            target_key = str(item_id).strip().lower()
             for item in items:
-                curr_id = item.get("item_id") or item.get("id")
-                if (curr_id == item_id or item.get("name") == item_id) and item.get("rarity") == rarity:
-                    target_item = item
+                raw_id = str(item.get("item_id") or item.get("id") or "").strip().lower()
+                raw_name = str(item.get("name") or "").strip().lower()
+                
+                if target_key in (raw_id, raw_name):
+                    item_name = item.get("name", item_id)
                     break
-            
-            if not target_item:
-                for item in items:
-                    curr_id = item.get("item_id") or item.get("id")
-                    if curr_id == item_id or item.get("name") == item_id:
-                        item_name = item.get("name", item_id)
-                        min_price = item.get("min_price", item.get("price", 0))
-                        break
-            else:
-                item_name = target_item.get("name", item_id)
-                min_price = target_item.get("min_price", target_item.get("price", 0))
-
         except Exception as e:
-            print(f"Error fetching item price: {e}")
+            logging.error(f"Ошибка получения имени через API: {e}")
 
-    price_str = f"{min_price:,.0f} руб." if min_price else "Нет данных"
+    # 2. Прямой поиск последней сохраненной минимальной цены в Supabase
+    min_price = await fetch_latest_price_from_supabase(item_id, rarity)
+
+    price_str = f"{min_price:,.0f} руб." if min_price and min_price > 0 else "Нет данных"
 
     await state.update_data(target_item_id=item_id, target_item_name=item_name, target_rarity=rarity)
     await state.set_state(SniperState.waiting_for_price)
@@ -361,154 +242,50 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     )
     await callback.answer()
 
+
 @dp.message(SniperState.waiting_for_price)
-async def set_sniper_price(message: types.Message, state: FSMContext):
-    clean_text = message.text.replace(" ", "").replace(",", "")
-    if not clean_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите корректное целое число.")
+async def process_price_and_save_sniper(message: types.Message, state: FSMContext):
+    try:
+        threshold = float(message.text.strip().replace(" ", "").replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите корректное число (цена в рублях):")
         return
 
-    price = float(clean_text)
-    user_id = message.from_user.id
-    license_key = user_sessions.get(user_id)
     data = await state.get_data()
-
-    item_name = data.get("target_item_name", data["target_item_id"])
+    user_id = message.from_user.id
+    item_id = data.get("target_item_id")
+    item_name = data.get("target_item_name")
+    rarity = data.get("target_rarity")
 
     payload = {
         "user_id": user_id,
-        "license_key": license_key,
-        "item_id": data["target_item_id"],
+        "item_id": item_id,
         "item_name": item_name,
-        "rarity": data["target_rarity"],
-        "threshold": price
+        "rarity": rarity,
+        "threshold": threshold
     }
 
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(f"{API_BASE_URL}/snipers", json=payload, timeout=5.0)
-            if res.status_code in [200, 201]:
-                await message.answer(
-                    f"✅ **Снайпер установлен!**\n"
-                    f"Предмет: **{item_name}** ({data['target_rarity']})\n"
-                    f"Порог цены: **{price:,.0f} руб.**", 
-                    parse_mode="Markdown"
-                )
-                await send_main_menu(message)
-            else:
-                await message.answer("❌ Ошибка сохранения снайпера.")
-        except Exception as e:
-            await message.answer(f"⚠️ Ошибка сети: {e}")
-
-    await state.clear()
-
-@dp.callback_query(F.data == "menu_snipers")
-async def show_user_snipers_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(f"{API_BASE_URL}/snipers/{user_id}", timeout=5.0)
-            snipers = res.json().get("data", [])
-        except Exception as e:
-            await callback.message.answer(f"⚠️ Ошибка получения снайперов: {e}")
-            await callback.answer()
-            return
-
-    if not snipers:
+    try:
+        supabase.table("user_snipers").insert(payload).execute()
+        await state.clear()
+        
         builder = InlineKeyboardBuilder()
-        builder.button(text="⬅️ В главное меню", callback_data="to_main_menu")
-        await callback.message.edit_text("🎯 У вас нет активных снайперов.", reply_markup=builder.as_markup())
-        await callback.answer()
-        return
+        builder.row(InlineKeyboardButton(text="🎯 К снайперам", callback_data="list_snipers"))
+        builder.row(InlineKeyboardButton(text="⬅️ Главное меню", callback_data="to_main_menu"))
 
-    builder = InlineKeyboardBuilder()
-    for s in snipers:
-        s_id = s["id"]
-        name = s.get("item_name", s.get("item_id", "Предмет"))
-        rarity = s.get("rarity", "Обычный")
-        price = float(s.get("threshold", 0))
-        builder.button(text=f"📦 {name} ({rarity}) — до {price:,.0f} руб.", callback_data=f"manage_sniper_{s_id}")
-
-    builder.adjust(1)
-    builder.row(
-        InlineKeyboardButton(text="❌ Удалить все", callback_data="delete_all_snipers"),
-        InlineKeyboardButton(text="⬅️ Главное меню", callback_data="to_main_menu")
-    )
-    await callback.message.edit_text("🎯 **Ваши снайперы:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("manage_sniper_"))
-async def manage_sniper_menu(callback: types.CallbackQuery):
-    sniper_id = callback.data.split("_")[-1]
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✏️ Изменить цену", callback_data=f"edit_price_{sniper_id}"),
-            InlineKeyboardButton(text="🗑 Удалить снайпер", callback_data=f"delete_single_{sniper_id}")
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="menu_snipers")]
-    ])
-
-    await callback.message.edit_text("⚙️ **Выберите действие:**", reply_markup=keyboard, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("delete_single_"))
-async def delete_single_sniper_handler(callback: types.CallbackQuery):
-    sniper_id = callback.data.split("_")[-1]
-
-    async with httpx.AsyncClient() as client:
-        await client.delete(f"{API_BASE_URL}/snipers/single/{sniper_id}")
-
-    await callback.answer("✅ Снайпер удален!", show_alert=True)
-    await show_user_snipers_callback(callback)
-
-@dp.callback_query(F.data == "delete_all_snipers")
-async def delete_all_snipers_handler(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-
-    async with httpx.AsyncClient() as client:
-        await client.delete(f"{API_BASE_URL}/snipers/{user_id}")
-
-    await callback.answer("✅ Все снайперы удалены!", show_alert=True)
-    await send_main_menu(callback)
-
-@dp.callback_query(F.data.startswith("edit_price_"))
-async def edit_price_start(callback: types.CallbackQuery, state: FSMContext):
-    sniper_id = callback.data.split("_")[-1]
-    await state.update_data(editing_sniper_id=sniper_id)
-    await state.set_state(SniperState.waiting_for_edit_price)
-
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="menu_snipers"))
-
-    await callback.message.edit_text("✏️ Введите новую цену в рублях (например: `350000`):", reply_markup=builder.as_markup(), parse_mode="Markdown")
-    await callback.answer()
-
-@dp.message(SniperState.waiting_for_edit_price)
-async def process_new_price(message: types.Message, state: FSMContext):
-    clean_text = message.text.replace(" ", "").replace(",", "")
-
-    if not clean_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите корректное число.")
-        return
-
-    new_price = float(clean_text)
-    data = await state.get_data()
-    sniper_id = data.get("editing_sniper_id")
-
-    async with httpx.AsyncClient() as client:
-        await client.patch(
-            f"{API_BASE_URL}/snipers/{sniper_id}",
-            json={"threshold": new_price}
+        await message.answer(
+            f"✅ **Снайпер успешно уставил цель!**\n\n"
+            f"📦 Предмет: **{item_name}** (`{rarity}`)\n"
+            f"🎯 Порог срабатывания: **{threshold:,.0f} руб.**",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
         )
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка сохранения снайпера: {e}")
 
-    await state.clear()
-    await message.answer(f"✅ Цена обновлена: **{new_price:,.0f} руб.**", parse_mode="Markdown")
-    await send_main_menu(message)
 
 async def main():
-    print("🚀 Запуск Telegram-бота Stalzone...")
+    print("🚀 Бот запущен!", flush=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
