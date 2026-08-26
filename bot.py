@@ -12,6 +12,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # Используем переменные окружения, с запасными значениями для локального запуска
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://server-auth-7cw9.onrender.com/api/login")
+PLATEGA_API_KEY = os.getenv("PLATEGA_API_KEY", "your_platega_api_key_here")
+PLATEGA_API_URL = os.getenv("PLATEGA_API_URL", "https://api.platega.com/v1/payment") # Пример URL, укажите реальный при необходимости
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -21,6 +23,16 @@ CATEGORY_NAMES = {
     "Артефакт": "Артефакты",
     "armor": "Броня",
     "Броня": "Броня",
+    "weapons": "Оружие",
+    "Оружие": "Оружие",
+    "containers": "Контейнер",
+    "Контейнер": "Контейнер",
+    "backpacks": "Рюкзак",
+    "Рюкзак": "Рюкзак",
+    "device": "Устройство",
+    "Устройство": "Устройство",
+    "weapon_modules": "Модуль",
+    "Модуль": "Модуль",
 }
 
 
@@ -44,9 +56,9 @@ async def show_main_menu(message_or_callback, edit=False, has_key=False):
     builder.button(text="🎯 Настроить снайпер цен", callback_data="sniper_menu")
     builder.button(text="🔑 Сменить ключ", callback_data="start_enter_key")
   else:
-    builder.button(text="💳 Купить доступ (Platega)", callback_data="buy_platega")
-    builder.button(text="⭐ Купить за Звезды", callback_data="buy_stars")
+    builder.button(text="💳 Купить доступ (Тарифы)", callback_data="about_tariffs")
     builder.button(text="🔑 Ввести ключ", callback_data="start_enter_key")
+    builder.button(text="💬 Техническая поддержка", url="https://t.me/your_support") # Ссылка на ваш аккаунт поддержки
     builder.button(text="📄 Пользовательское соглашение", url="https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64")
     builder.button(text="🔒 Политика конфиденциальности", url="https://telegra.ph/Politika-konfidencialnosti-08-25-84")
   
@@ -54,7 +66,8 @@ async def show_main_menu(message_or_callback, edit=False, has_key=False):
 
   text = (
       "👋 **Stalzone Auction Bot**\n\n"
-      "Добро пожаловать! Выберите нужный пункт меню:"
+      "Добро пожаловать! Инструмент для мониторинга и анализа цен аукциона.\n"
+      "Выберите нужный пункт меню ниже:"
   )
   
   if edit:
@@ -131,6 +144,29 @@ async def process_back_to_main(callback: types.CallbackQuery, state: FSMContext)
     pass
   
   await show_main_menu(callback.message, edit=False, has_key=has_key)
+  await callback.answer()
+
+
+# --- ИНФОРМАЦИЯ И ТАРИФЫ ---
+@dp.callback_query(F.data == "about_tariffs")
+async def process_about_tariffs(callback: types.CallbackQuery, state: FSMContext):
+  builder = InlineKeyboardBuilder()
+  builder.button(text="💳 Оплатить через Platega (299 руб.)", callback_data="buy_platega")
+  builder.button(text="⭐ Оплатить через Telegram Stars (150 звёзд)", callback_data="buy_stars")
+  builder.button(text="⬅️ Назад в меню", callback_data="back_to_main")
+  builder.adjust(1)
+
+  text = (
+      "📋 **Информация о покупке и тарифы**\n\n"
+      "**Что приобретается:**\n"
+      "Лицензионный доступ к закрытой базе данных аукциона Stalzone на **30 календарных дней**. "
+      "После оплаты вы получаете уникальный ключ, который открывает полный каталог предметов, историю изменения цен по редкостям и систему «снайпер» для отслеживания выгодных лотов.\n\n"
+      "🏷 **Тарифы:**\n"
+      "• **«Стандартный (30 дней)»** — 299 руб. (Platega) / 150 Telegram Stars.\n\n"
+      "Выберите удобный способ оплаты ниже:"
+  )
+
+  await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
   await callback.answer()
 
 
@@ -241,7 +277,7 @@ async def on_successful_payment(message: types.Message, state: FSMContext):
   builder.adjust(1)
 
   text = (
-      "🎉 **Оплата через Telegram Stars прошла успешно!**\n\n"
+      "🎉 **Оплата прошла успешно!**\n\n"
       f"Ваш лицензионный ключ: `{new_key}`\n\n"
       "Скопируйте его и введите командой /key для доступа."
   )
@@ -642,7 +678,7 @@ async def price_sniper_background_loop():
 
 async def main():
   asyncio.create_task(price_sniper_background_loop())
-  print("Бот запущен со встроенным снайпером цен и выбором редкости!")
+  print("Бот запущен со встроенным снайпером цен и информацией о тарифах!")
   await dp.start_polling(bot)
 
 
