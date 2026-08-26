@@ -331,12 +331,11 @@ async def process_sniper_threshold_input(message: types.Message, state: FSMConte
         return
 
     data = await state.get_data()
-    telegram_id = str(message.from_user.id)
+    user_id = message.from_user.id  # Числовой int для int8 в Supabase
     license_key = data.get("license_key")
 
     payload = {
-        "telegram_id": telegram_id,
-        "user_id": telegram_id,
+        "user_id": user_id,
         "license_key": license_key,
         "item_id": data.get("sniper_item_id"),
         "item_name": data.get("sniper_item_name"),
@@ -364,17 +363,17 @@ async def process_sniper_threshold_input(message: types.Message, state: FSMConte
     builder.button(text="🏠 Главное меню", callback_data="back_to_main")
     builder.adjust(1)
 
-    await message.answer(f"✅ **Снайпер привязан к Telegram ID ({telegram_id})!**\nЦелевая цена: **{threshold:,.0f} руб.**", reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await message.answer(f"✅ **Снайпер привязан к Telegram ID ({user_id})!**\nЦелевая цена: **{threshold:,.0f} руб.**", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 
 @dp.callback_query(F.data == "sniper_menu")
 async def process_sniper_menu(callback: types.CallbackQuery, state: FSMContext):
-    telegram_id = str(callback.from_user.id)
+    user_id = callback.from_user.id
     builder = InlineKeyboardBuilder()
     
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE_URL}/snipers/{telegram_id}")
+            res = await client.get(f"{API_BASE_URL}/snipers/{user_id}")
             snipers = res.json().get("data", []) if res.status_code == 200 else []
         except Exception as e:
             print(f"Ошибка получения списка снайперов: {e}")
@@ -396,10 +395,10 @@ async def process_sniper_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "cancel_sniper")
 async def process_cancel_sniper(callback: types.CallbackQuery, state: FSMContext):
-    telegram_id = str(callback.from_user.id)
+    user_id = callback.from_user.id
     async with httpx.AsyncClient() as client:
         try:
-            await client.delete(f"{API_BASE_URL}/snipers/{telegram_id}")
+            await client.delete(f"{API_BASE_URL}/snipers/{user_id}")
         except Exception as e:
             print(f"Ошибка удаления снайперов: {e}")
     
