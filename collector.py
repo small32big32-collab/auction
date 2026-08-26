@@ -34,6 +34,15 @@ COLOR_MAP = {
 
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
+RARITY_TO_QLT = {
+    "Обычный": 0,
+    "Необычный": 1,
+    "Особый": 2,
+    "Редкий": 3,
+    "Исключительный": 4,
+    "Легендарный": 5,
+}
+
 
 class ExboAuthManager:
     """Управление авторизацией и получением Bearer-токена EXBO API."""
@@ -149,7 +158,7 @@ def initialize_items_database():
 async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str) -> tuple[float | None, int]:
     url = f"{BASE_API_URL}/auction/{item_id}/lots"
     params = {
-        "limit": 20,
+        "limit": 200,
         "sort": "buyout_price",
         "order": "asc",
         "additional": "true"
@@ -172,14 +181,26 @@ async def fetch_auction_price(client: httpx.AsyncClient, item_id: str, rarity: s
             if not lots:
                 return None, 0
 
+            target_qlt = RARITY_TO_QLT.get(rarity, 0)
             buyout_prices = []
+
             for lot in lots:
-                price = lot.get("buyoutPrice") or lot.get("buyout_price") or lot.get("startPrice")
-                if price and price > 0:
-                    buyout_prices.append(price)
+                add_data = lot.get("additional") or lot.get("info") or {}
+                
+                # Качество (редкость): qlt / quality
+                lot_qlt = add_data.get("qlt", add_data.get("quality", 0))
+                # Заточка (уровень): upg / upgrade / level
+                lot_upg = str(add_data.get("upg", add_data.get("upgrade", add_data.get("level", 0))))
+
+                # Фильтрация по точной редкости и заточке
+                if int(lot_qlt) == target_qlt and lot_upg == str(variant):
+                    price = lot.get("buyoutPrice") or lot.get("buyout_price") or lot.get("startPrice")
+                    if price and price > 0:
+                        buyout_prices.append(price)
 
             if buyout_prices:
-                return min(buyout_prices), len(lots)
+                return min(buyout_prices), len(buyout_prices)
+
         elif res.status_code != 404:
             print(f"⚠️ API [{item_id}] статус {res.status_code}: {res.text}", flush=True)
 
