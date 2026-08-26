@@ -15,8 +15,8 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 # --- Настройки контактов и документов ---
 SUPPORT_TG = "https://t.me/ungdaddy"
 PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
-TERMS_URL = "https://example.com/terms"
-PRIVACY_URL = "https://example.com/privacy"
+TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
+PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
