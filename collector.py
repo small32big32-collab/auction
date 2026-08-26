@@ -30,29 +30,45 @@ QUALITY_MAP = {
     5: "Легендарный",
 }
 
-# Известные русские наименования редкостей для поиска в infoBlocks
 KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
 
-def extract_rarity_from_json(data: dict) -> str:
-    """Извлекает редкость из infoBlocks файла предмета, если она там указана"""
+def extract_rarity_from_json(data: dict, file_path: Path) -> str:
+    """Точное извлечение редкости артефакта из структуры JSON или имени файла"""
+    # 1. Поиск по infoBlocks (ключи и значения качества EXBO)
     info_blocks = data.get("infoBlocks", [])
     for block in info_blocks:
         elements = block.get("elements", [])
         for el in elements:
-            key_lines = el.get("key", {}).get("lines", {})
-            ru_key = key_lines.get("ru", "")
-            if ru_key in KNOWN_RARITIES:
-                return ru_key
-    
-    # Резервный поиск по полю color
+            # Проверяем ключ
+            key_dict = el.get("key", {})
+            if "quality" in key_dict.get("key", "") or "rarity" in key_dict.get("key", ""):
+                ru_text = key_dict.get("lines", {}).get("ru", "")
+                if ru_text in KNOWN_RARITIES:
+                    return ru_text
+            
+            # Проверяем значение
+            val_dict = el.get("value", {})
+            ru_val = val_dict.get("lines", {}).get("ru", "")
+            if ru_val in KNOWN_RARITIES:
+                return ru_val
+
+    # 2. Поиск по системному полю color
     color = data.get("color", "").upper()
     if "UNCOMMON" in color: return "Необычный"
     if "SPECIAL" in color: return "Особый"
     if "RARE" in color: return "Редкий"
     if "EXCEPTIONAL" in color: return "Исключительный"
     if "LEGENDARY" in color: return "Легендарный"
-    
+
+    # 3. Анализ названия файла или родительских папок на наличие грейда
+    path_str = str(file_path).lower()
+    if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
+    if "special" in path_str or "особ" in path_str: return " Особый"
+    if "rare" in path_str or "редк" in path_str: return "Редкий"
+    if "exceptional" in path_str or "исключ" in path_str: return "Исключительный"
+    if "legendary" in path_str or "легенд" in path_str: return "Легендарный"
+
     return "Обычный"
 
 
@@ -75,8 +91,7 @@ def load_valuable_items() -> list[dict]:
                     lines = data.get("name", {}).get("lines", {})
                     name = lines.get("ru") or lines.get("en") or item_id
                     
-                    # Определение редкости прямо из карточки предмета
-                    default_rarity = extract_rarity_from_json(data)
+                    default_rarity = extract_rarity_from_json(data, path)
 
                     if item_id and name:
                         items_list.append({
@@ -183,7 +198,6 @@ def collect_iteration(items: list[dict]):
 
                     rarity_data = {}
                     for lot in lots:
-                        # 1. Попытка вытащить качество из самого лота
                         qlt = (
                             lot.get("qlt")
                             if lot.get("qlt") is not None
@@ -192,7 +206,6 @@ def collect_iteration(items: list[dict]):
                         if qlt is None and "item" in lot:
                             qlt = lot["item"].get("qlt") or lot["item"].get("quality")
 
-                        # 2. Если в лоте качества нет, берем сгенерированное из файла предмета
                         if qlt is not None:
                             rarity_name = QUALITY_MAP.get(int(qlt), item.get("default_rarity", "Обычный"))
                         else:
