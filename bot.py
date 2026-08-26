@@ -13,23 +13,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://server-auth-7cw9.onrender.com/api/login")
 
-# Остальной ваш код бота...
-
-# Настройки Platega
-PLATEGA_API_URL = "https://api.platega.io/v1/invoice"
-PLATEGA_API_KEY = "YOUR_PLATEGA_API_KEY"
-
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 CATEGORY_NAMES = {
     "artifacts": "Артефакты",
     "armor": "Броня",
-    "weapons": "Оружие",
-    "containers": "Контейнер",
-    "backpacks": "Рюкзак",
-    "device": "Устройство",
-    "weapon_modules": "Модуль",
 }
 
 
@@ -262,9 +251,14 @@ async def on_successful_payment(message: types.Message, state: FSMContext):
 async def process_key_input(message: types.Message, state: FSMContext):
   license_key = message.text.strip()
 
+  url = f"{API_BASE_URL}/items/{license_key}"
+  print(f"DEBUG: Отправка запроса проверки ключа на URL: {url}")
+
   async with httpx.AsyncClient() as client:
     try:
-      res = await client.get(f"{API_BASE_URL}/items/{license_key}")
+      res = await client.get(url)
+      print(f"DEBUG: Ответ сервера — Status: {res.status_code}, Body: {res.text}")
+
       if res.status_code == 200:
         await state.update_data(license_key=license_key)
         await state.set_state(UserSession.in_menu)
@@ -274,10 +268,11 @@ async def process_key_input(message: types.Message, state: FSMContext):
         builder = InlineKeyboardBuilder()
         builder.button(text="⬅️ Назад в меню", callback_data="back_to_main")
         await message.answer(
-            "❌ Неверный или просроченный ключ. Попробуйте еще раз:",
+            f"❌ Неверный или просроченный ключ (Код {res.status_code}). Попробуйте еще раз:",
             reply_markup=builder.as_markup()
         )
     except Exception as e:
+      print(f"DEBUG EXCEPTION: Ошибка запроса к API: {e}")
       await message.answer(f"⚠️ Ошибка сервера: {e}")
 
 
@@ -346,7 +341,6 @@ async def process_category_click(callback: types.CallbackQuery, state: FSMContex
         items = res.json().get("data", [])
         filtered_items = [i for i in items if i.get("category", "Разное") == category_name]
 
-        # Группируем уникальные названия и item_id предметов
         unique_items = {}
         for item in filtered_items:
           name = item.get("name")
@@ -358,7 +352,7 @@ async def process_category_click(callback: types.CallbackQuery, state: FSMContex
         for name, item_id in unique_items.items():
           builder.button(
               text=f"📦 {name}",
-              callback_data=f"item_{item_id}",  # Передаем стабильный item_id вместо названия
+              callback_data=f"item_{item_id}",
           )
         builder.adjust(1)
         builder.row(
@@ -398,10 +392,7 @@ async def process_item_click(callback: types.CallbackQuery, state: FSMContext):
           await callback.answer()
           return
 
-        # Берем читаемое имя из первой записи
         item_name = history_data[0].get("item_name", item_id)
-        
-        # Собираем уникальные доступные редкости для этого item_id
         rarities = list(set(i.get("rarity", "Обычный") for i in history_data))
 
         builder = InlineKeyboardBuilder()
@@ -430,7 +421,6 @@ async def process_rarity_click(callback: types.CallbackQuery, state: FSMContext)
   if not license_key:
     return
 
-  # Безопасно парсим callback_data вида rarity_{item_id}_{rarity}
   parts = callback.data.replace("rarity_", "", 1).rsplit("_", 1)
   if len(parts) != 2:
     await callback.answer("Ошибка данных")
@@ -444,7 +434,6 @@ async def process_rarity_click(callback: types.CallbackQuery, state: FSMContext)
       if res.status_code == 200:
         history_data = res.json().get("data", [])
         
-        # Фильтруем по выбранной редкости
         filtered = [
             i for i in history_data 
             if i.get("rarity") == selected_rarity
@@ -461,7 +450,7 @@ async def process_rarity_click(callback: types.CallbackQuery, state: FSMContext)
             f"📊 **История выкупа: {item_name}**",
             f"🔹 Редкость: **{selected_rarity}**\n",
         ]
-        for row in filtered[:5]:  # Последние 5 записей
+        for row in filtered[:5]:
           date_str = row["created_at"][:16].replace("T", " ")
           price = f"{row['min_buyout_price']:,}".replace(",", " ")
           lines.append(
@@ -483,7 +472,6 @@ async def process_rarity_click(callback: types.CallbackQuery, state: FSMContext)
 
 @dp.callback_query(F.data.startswith("set_sniper_"))
 async def process_set_sniper(callback: types.CallbackQuery, state: FSMContext):
-  # Парсим callback вида set_sniper_{item_id}_{rarity}
   parts = callback.data.replace("set_sniper_", "", 1).rsplit("_", 1)
   if len(parts) != 2:
     await callback.answer("Ошибка настройки снайпера")
@@ -540,7 +528,6 @@ async def process_sniper_threshold_input(message: types.Message, state: FSMConte
   selected_rarity = data.get("sniper_rarity")
   user_id = message.from_user.id
 
-  # Сохраняем снайпера в память с учетом редкости
   active_snipers[user_id] = {
       "key": license_key,
       "item_id": item_id,
@@ -603,10 +590,9 @@ async def process_cancel_sniper(callback: types.CallbackQuery, state: FSMContext
   await callback.answer()
 
 
-# Фоновая задача мониторинга цен (Снайпер)
 async def price_sniper_background_loop():
   while True:
-    await asyncio.sleep(60)  # Проверка рынка каждую минуту
+    await asyncio.sleep(60)
     if not active_snipers:
       continue
 
@@ -622,7 +608,6 @@ async def price_sniper_background_loop():
           if res.status_code == 200:
             history_data = res.json().get("data", [])
             if history_data:
-              # Ищем свежую запись именно для нужной редкости
               matching_rows = [
                   row for row in history_data 
                   if row.get("rarity") == target_rarity
@@ -631,7 +616,6 @@ async def price_sniper_background_loop():
                 latest = matching_rows[0]
                 current_price = latest.get("min_buyout_price", 0)
                 
-                # Если текущая цена ниже или равна порогу снайпера
                 if current_price <= threshold:
                   date_str = latest.get("created_at", "")[:16].replace("T", " ")
                   lots = latest.get("total_lots", 0)
@@ -649,15 +633,12 @@ async def price_sniper_background_loop():
                   builder.adjust(1)
 
                   await bot.send_message(user_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
-                  
-                  # Удаляем снайпер после срабатывания, чтобы не спамить
                   del active_snipers[user_id]
         except Exception as e:
           print(f"Ошибка в фоновой задаче снайпера для user {user_id}: {e}")
 
 
 async def main():
-  # Запускаем фоновый мониторинг цен параллельно с поллингом
   asyncio.create_task(price_sniper_background_loop())
   print("Бот запущен со встроенным снайпером цен и выбором редкости!")
   await dp.start_polling(bot)
