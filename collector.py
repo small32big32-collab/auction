@@ -117,6 +117,9 @@ def load_valuable_items() -> list[dict]:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     
+                    if not isinstance(data, dict):
+                        continue
+                    
                     item_id = path.stem
                     
                     name = None
@@ -139,8 +142,7 @@ def load_valuable_items() -> list[dict]:
                         "default_rarity": default_rarity
                     })
                     success_count += 1
-            except Exception as e:
-                print(f"⚠️ Ошибка чтения {path.name}: {e}")
+            except Exception:
                 continue
                 
         print(f"✅ Успешно загружено предметов в категории '{cat_folder}': {success_count}")
