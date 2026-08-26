@@ -32,31 +32,60 @@ QUALITY_MAP = {
 
 KNOWN_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 
+DEBUG_LOT_LOGGED = False
+
 
 def extract_lot_rarity(lot: dict, default_rarity: str = "Обычный") -> str:
-    """Извлекает редкость конкретного лота аукциона с проверкой дополнительного блока additional"""
+    """Глубокий поиск редкости лота по всем возможным вложенным объектам и строкам"""
     if not isinstance(lot, dict):
         return default_rarity
 
-    possible_sources = [
-        lot.get("additional"),
-        lot,
-        lot.get("item"),
-        lot.get("item", {}).get("additional") if isinstance(lot.get("item"), dict) else None,
-    ]
+    additional = lot.get("additional")
+    if isinstance(additional, str):
+        try:
+            additional = json.loads(additional)
+        except Exception:
+            additional = None
 
-    for source in possible_sources:
-        if isinstance(source, dict):
-            for key in ["qlt", "quality", "rarity", "tier"]:
-                val = source.get(key)
-                if val is not None:
-                    try:
-                        q_int = int(val)
-                        if q_int in QUALITY_MAP:
-                            return QUALITY_MAP[q_int]
-                    except (ValueError, TypeError):
-                        if str(val) in KNOWN_RARITIES:
-                            return str(val)
+    dicts_to_search = []
+    if isinstance(additional, dict):
+        dicts_to_search.append(additional)
+    elif isinstance(additional, list):
+        for el in additional:
+            if isinstance(el, dict):
+                dicts_to_search.append(el)
+
+    dicts_to_search.append(lot)
+
+    item_dict = lot.get("item")
+    if isinstance(item_dict, dict):
+        dicts_to_search.append(item_dict)
+        item_add = item_dict.get("additional")
+        if isinstance(item_add, dict):
+            dicts_to_search.append(item_add)
+
+    target_keys = ["qlt", "quality", "rarity", "tier", "grade", "quality_tier"]
+    for d in dicts_to_search:
+        for k in target_keys:
+            if k in d and d[k] is not None:
+                val = d[k]
+                try:
+                    v_int = int(val)
+                    if v_int in QUALITY_MAP:
+                        return QUALITY_MAP[v_int]
+                except (ValueError, TypeError):
+                    pass
+
+                v_str = str(val).strip()
+                if v_str in KNOWN_RARITIES:
+                    return v_str
+
+                v_upper = v_str.upper()
+                if "UNCOMMON" in v_upper: return "Необычный"
+                if "SPECIAL" in v_upper: return "Особый"
+                if "RARE" in v_upper: return "Редкий"
+                if "EXCEPTIONAL" in v_upper: return "Исключительный"
+                if "LEGENDARY" in v_upper: return "Легендарный"
 
     return default_rarity
 
@@ -255,6 +284,7 @@ def check_user_snipers(item_id: str, rarity_name: str, current_price: float, tot
 
 
 def collect_iteration(items: list[dict]):
+    global DEBUG_LOT_LOGGED
     if not items:
         return
 
@@ -283,6 +313,10 @@ def collect_iteration(items: list[dict]):
 
                     if not lots:
                         continue
+
+                    if not DEBUG_LOT_LOGGED and lots:
+                        print(f"🔎 DEBUG LOT RAW DATA: {json.dumps(lots[0], ensure_ascii=False)}")
+                        DEBUG_LOT_LOGGED = True
 
                     rarity_data = {}
                     for lot in lots:
