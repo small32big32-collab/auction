@@ -64,7 +64,7 @@ def extract_rarity_from_json(data: dict, file_path: Path) -> str:
     # 3. Анализ названия файла или родительских папок на наличие грейда
     path_str = str(file_path).lower()
     if "uncommon" in path_str or "необыч" in path_str: return "Необычный"
-    if "special" in path_str or "особ" in path_str: return " Особый"
+    if "special" in path_str or "особ" in path_str: return "Особый"
     if "rare" in path_str or "редк" in path_str: return "Редкий"
     if "exceptional" in path_str or "исключ" in path_str: return "Исключительный"
     if "legendary" in path_str or "легенд" in path_str: return "Легендарный"
@@ -73,9 +73,22 @@ def extract_rarity_from_json(data: dict, file_path: Path) -> str:
 
 
 def load_valuable_items() -> list[dict]:
-    base_dir = Path(__file__).parent / "stalzone-database" / "ru" / "items"
+    # Универсальный поиск папки базы данных в проекте
+    possible_paths = [
+        Path(__file__).parent / "stalzone-database" / "ru" / "items",
+        Path.cwd() / "stalzone-database" / "ru" / "items",
+        Path.cwd().parent / "stalzone-database" / "ru" / "items",
+    ]
+    
+    base_dir = None
+    for p in possible_paths:
+        if p.exists():
+            base_dir = p
+            break
+
     items_list = []
-    if not base_dir.exists():
+    if not base_dir:
+        print("⚠️ Предупреждение: папка 'stalzone-database' не найдена!")
         return items_list
 
     for cat_folder, cat_name in TARGET_CATEGORIES.items():
