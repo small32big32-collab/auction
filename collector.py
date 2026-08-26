@@ -16,8 +16,8 @@ AUTH_URL = "https://exbo.net/oauth/token"
 FETCH_INTERVAL = 900
 
 TARGET_CATEGORIES = {
-    "armor": "Броня",
     "artefact": "Артефакт",
+    "armor": "Броня",
 }
 
 # Соответствие цифрового качества EXBO текстовым редкостям
