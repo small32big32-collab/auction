@@ -170,7 +170,7 @@ async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     user_sessions.pop(user_id, None)
     await state.set_state(AuthState.waiting_for_key)
-    await callback.message.answer(
+    await callback.message.edit_text(
         "🔑 Введите новый ключ доступа:",
         reply_markup=get_auth_inline_menu(),
         parse_mode="Markdown"
@@ -178,7 +178,8 @@ async def change_key_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "to_main_menu")
-async def to_main_menu_handler(callback: types.CallbackQuery):
+async def to_main_menu_handler(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     user_id = callback.from_user.id
     if user_id not in user_sessions:
         await callback.message.edit_text(
@@ -192,7 +193,8 @@ async def to_main_menu_handler(callback: types.CallbackQuery):
 
 # --- Каталог и Выбор Предметов ---
 @dp.callback_query(F.data == "menu_catalog")
-async def show_catalog_callback(callback: types.CallbackQuery):
+async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     user_id = callback.from_user.id
     license_key = user_sessions.get(user_id)
 
@@ -232,8 +234,6 @@ async def select_item_info(callback: types.CallbackQuery):
     license_key = user_sessions.get(user_id)
 
     item_name = item_id
-    min_price = 0
-
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
@@ -241,17 +241,13 @@ async def select_item_info(callback: types.CallbackQuery):
             for item in items:
                 if item["item_id"] == item_id:
                     item_name = item.get("name", item_id)
-                    min_price = item.get("min_price", item.get("price", 0))
                     break
         except Exception:
             pass
 
-    price_str = f"{min_price:,.0f} руб." if min_price else "Нет данных"
-
     text = (
-        f"🔮 **Предмет:** {item_name}\n"
-        f"💰 **Текущая минимальная цена:** `{price_str}`\n\n"
-        f"Выберите **редкость** предмета для настройки снайпера:"
+        f"🔮 **Предмет:** {item_name}\n\n"
+        f"Выберите **редкость** предмета, чтобы узнать текущую цену и настроить снайпер:"
     )
 
     await callback.message.edit_text(
@@ -270,24 +266,37 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     license_key = user_sessions.get(user_id)
 
     item_name = item_id
+    min_price = 0
+
+    # Ищем цену с учетом выбранной редкости
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE_URL}/items/{license_key}", timeout=5.0)
             items = res.json().get("data", [])
             for item in items:
-                if item["item_id"] == item_id:
+                if item["item_id"] == item_id and item.get("rarity") == rarity:
                     item_name = item.get("name", item_id)
+                    min_price = item.get("min_price", item.get("price", 0))
                     break
+                elif item["item_id"] == item_id:
+                    item_name = item.get("name", item_id)
         except Exception:
             pass
+
+    price_str = f"{min_price:,.0f} руб." if min_price else "Нет данных"
 
     await state.update_data(target_item_id=item_id, target_item_name=item_name, target_rarity=rarity)
     await state.set_state(SniperState.waiting_for_price)
 
-    await callback.message.answer(
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⬅️ Отмена (в главное меню)", callback_data="to_main_menu"))
+
+    await callback.message.edit_text(
         f"🎯 Выбран предмет: **{item_name}**\n"
-        f"Редкость: **{rarity}**\n\n"
+        f"Редкость: **{rarity}**\n"
+        f"💰 **Текущая минимальная цена:** `{price_str}`\n\n"
         f"Введите **максимальную цену в рублях**, при которой бот должен прислать уведомление:",
+        reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -411,7 +420,10 @@ async def edit_price_start(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(editing_sniper_id=sniper_id)
     await state.set_state(SniperState.waiting_for_edit_price)
 
-    await callback.message.answer("✏️ Введите новую цену в рублях (например: `350000`):", parse_mode="Markdown")
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="menu_snipers"))
+
+    await callback.message.edit_text("✏️ Введите новую цену в рублях (например: `350000`):", reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(SniperState.waiting_for_edit_price)
