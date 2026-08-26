@@ -21,6 +21,8 @@ dp = Dispatcher()
 CATEGORY_NAMES = {
     "artifacts": "Артефакты",
     "Артефакт": "Артефакты",
+    "armor": "Броня",
+    "Броня": "Броня",
 }
 
 
