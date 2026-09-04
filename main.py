@@ -1,3 +1,4 @@
+```python
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -12,52 +13,52 @@ from supabase import create_client
 # НАСТРОЙКИ
 # ============================================================
 
-# Ключи можно оставить в файле, как ты просил.
-# Если переменная окружения существует — используется она.
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL",
-    "https://mdursbqpogprwzbhjzxz.supabase.co"
-)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo"
-)
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
 
-# Внутренний ключ для запросов бота к административному
-# endpoint генерации лицензии.
-#
-# Придумай свою строку и поставь одинаковую:
-# 1) здесь
-# 2) в bot.py
-INTERNAL_API_KEY = os.getenv(
-    "INTERNAL_API_KEY",
-    "GOIDA_ZAPRET"
-)
+try:
+    DEFAULT_LICENSE_DAYS = int(
+        os.getenv("DEFAULT_LICENSE_DAYS", "30")
+    )
+except ValueError:
+    DEFAULT_LICENSE_DAYS = 30
 
-DEFAULT_LICENSE_DAYS = int(
-    os.getenv("DEFAULT_LICENSE_DAYS", "30")
-)
+
+# ============================================================
+# ПРОВЕРКА КОНФИГУРАЦИИ
+# ============================================================
+
+missing_variables = []
+
+if not SUPABASE_URL:
+    missing_variables.append("SUPABASE_URL")
+
+if not SUPABASE_KEY:
+    missing_variables.append("SUPABASE_KEY")
+
+if missing_variables:
+    raise RuntimeError(
+        "Не настроены обязательные переменные Railway: "
+        + ", ".join(missing_variables)
+        + ". Добавь их в Railway → Variables."
+    )
 
 
 # ============================================================
 # SUPABASE
 # ============================================================
 
-if not SUPABASE_URL or not SUPABASE_KEY:
+try:
+    supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+except Exception as e:
     raise RuntimeError(
-        "Не настроены SUPABASE_URL / SUPABASE_KEY"
+        f"Не удалось создать подключение к Supabase: {e}"
     )
-
-if SUPABASE_KEY == "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo":
-    print(
-        "⚠️ ВНИМАНИЕ: SUPABASE_KEY ещё не вставлен в main.py"
-    )
-
-supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
 
 
 # ============================================================
@@ -66,7 +67,7 @@ supabase = create_client(
 
 app = FastAPI(
     title="Stalzone Auction API",
-    version="2.0"
+    version="2.1"
 )
 
 
@@ -100,7 +101,7 @@ def clean_license_key(value: Optional[str]) -> str:
     if not value:
         return ""
 
-    return value.strip()
+    return str(value).strip()
 
 
 def clean_item_id(value: str) -> str:
@@ -111,7 +112,7 @@ def clean_rarity(value: Optional[str]) -> str:
     if not value:
         return "Обычный"
 
-    value = value.strip()
+    value = str(value).strip()
 
     if not value or value == "None":
         return "Обычный"
@@ -119,27 +120,61 @@ def clean_rarity(value: Optional[str]) -> str:
     return value
 
 
+def mask_license_key(value: str) -> str:
+    """
+    Безопасный вывод ключа в логах.
+    Никогда не выводим полный ключ.
+    """
+
+    value = clean_license_key(value)
+
+    if len(value) <= 4:
+        return "***"
+
+    return value[:2] + "***" + value[-2:]
+
+
+# ============================================================
+# ПРОВЕРКА ЛИЦЕНЗИИ
+# ============================================================
+
 def verify_license_key(
     license_key: str,
     telegram_id: Optional[int] = None
 ) -> str:
     """
-    Возвращает:
+    Возможные результаты:
 
     ok
-        Ключ существует, активен и не просрочен.
+        Ключ существует, активен, не просрочен
+        и принадлежит этому Telegram ID.
 
     invalid
         Ключ не найден, выключен или просрочен.
 
     bound_other
         Ключ привязан к другому Telegram ID.
+
+    db_error
+        Ошибка обращения к Supabase.
     """
 
     license_key = clean_license_key(license_key)
 
     if not license_key:
         return "invalid"
+
+    print(
+        "LICENSE CHECK | key=%s | telegram_id=%s"
+        % (
+            mask_license_key(license_key),
+            telegram_id
+        )
+    )
+
+    # --------------------------------------------------------
+    # Запрос лицензии
+    # --------------------------------------------------------
 
     try:
         response = (
@@ -155,24 +190,43 @@ def verify_license_key(
 
     except Exception as e:
         print(
-            f"⚠️ Ошибка проверки лицензии: {e}"
+            "❌ LICENSE DB ERROR | %s"
+            % e
         )
-        return "invalid"
+
+        return "db_error"
 
     if not response.data:
+        print(
+            "LICENSE INVALID | reason=not_found"
+        )
+
         return "invalid"
 
     license_row = response.data[0]
 
+    print(
+        "LICENSE FOUND | id=%s | active=%s | telegram_id=%s"
+        % (
+            license_row.get("id"),
+            license_row.get("is_active"),
+            license_row.get("telegram_id")
+        )
+    )
+
     # --------------------------------------------------------
-    # Активность
+    # Проверка активности
     # --------------------------------------------------------
 
     if not license_row.get("is_active"):
+        print(
+            "LICENSE INVALID | reason=inactive"
+        )
+
         return "invalid"
 
     # --------------------------------------------------------
-    # Срок действия
+    # Проверка срока
     # --------------------------------------------------------
 
     expires_at_str = license_row.get("expires_at")
@@ -192,35 +246,60 @@ def verify_license_key(
                     tzinfo=timezone.utc
                 )
 
-            if datetime.now(timezone.utc) >= expires_at:
+            now = datetime.now(timezone.utc)
 
-                # Автоматически выключаем просроченную лицензию.
+            if now >= expires_at:
+
+                print(
+                    "LICENSE INVALID | reason=expired | expires_at=%s"
+                    % expires_at
+                )
+
                 try:
                     (
                         supabase
                         .table("licenses")
-                        .update({"is_active": False})
-                        .eq("id", license_row["id"])
+                        .update({
+                            "is_active": False
+                        })
+                        .eq(
+                            "id",
+                            license_row["id"]
+                        )
                         .execute()
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(
+                        "⚠️ Не удалось отключить просроченную лицензию: %s"
+                        % e
+                    )
 
                 return "invalid"
 
         except Exception as e:
+
             print(
-                f"⚠️ Ошибка разбора expires_at: {e}"
+                "❌ LICENSE DATE ERROR | %s"
+                % e
             )
 
             return "invalid"
 
     # --------------------------------------------------------
-    # Проверка Telegram ID
+    # Если Telegram ID не передан
     # --------------------------------------------------------
 
     if telegram_id is None:
+
+        print(
+            "LICENSE OK | telegram_id not provided"
+        )
+
         return "ok"
+
+    # --------------------------------------------------------
+    # Проверка привязки Telegram ID
+    # --------------------------------------------------------
 
     bound_id = license_row.get("telegram_id")
 
@@ -234,8 +313,16 @@ def verify_license_key(
                 .update({
                     "telegram_id": telegram_id
                 })
-                .eq("id", license_row["id"])
+                .eq(
+                    "id",
+                    license_row["id"]
+                )
                 .execute()
+            )
+
+            print(
+                "LICENSE BOUND | telegram_id=%s"
+                % telegram_id
             )
 
             return "ok"
@@ -243,17 +330,43 @@ def verify_license_key(
         except Exception as e:
 
             print(
-                f"⚠️ Ошибка привязки лицензии: {e}"
+                "❌ LICENSE BIND ERROR | %s"
+                % e
             )
 
-            return "invalid"
+            return "db_error"
 
-    # Ключ уже привязан.
+    # --------------------------------------------------------
+    # Ключ уже привязан
+    # --------------------------------------------------------
+
     try:
+
         if int(bound_id) != int(telegram_id):
+
+            print(
+                "LICENSE REJECTED | bound_id=%s | request_id=%s"
+                % (
+                    bound_id,
+                    telegram_id
+                )
+            )
+
             return "bound_other"
-    except (TypeError, ValueError):
+
+    except (TypeError, ValueError) as e:
+
+        print(
+            "❌ LICENSE TELEGRAM ID ERROR | %s"
+            % e
+        )
+
         return "invalid"
+
+    print(
+        "LICENSE OK | telegram_id=%s"
+        % telegram_id
+    )
 
     return "ok"
 
@@ -263,8 +376,11 @@ def require_license(
     telegram_id: Optional[int] = None
 ):
     """
-    Проверяет лицензию и выбрасывает HTTP ошибку,
-    если доступ запрещён.
+    Проверяет лицензию.
+
+    ВАЖНО:
+    Ошибка Supabase теперь возвращает HTTP 503,
+    а не маскируется под неправильный ключ.
     """
 
     status = verify_license_key(
@@ -273,6 +389,7 @@ def require_license(
     )
 
     if status == "bound_other":
+
         raise HTTPException(
             status_code=409,
             detail=(
@@ -281,24 +398,43 @@ def require_license(
             )
         )
 
+    if status == "db_error":
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Ошибка подключения к базе лицензий. "
+                "Попробуйте позже."
+            )
+        )
+
     if status != "ok":
+
         raise HTTPException(
             status_code=403,
             detail="Неверный или просроченный ключ."
         )
 
 
+# ============================================================
+# ВНУТРЕННИЙ API KEY
+# ============================================================
+
 def require_internal_api_key(
     x_internal_api_key: Optional[str]
 ):
     """
-    Защита внутренних административных запросов.
+    Защита административных запросов.
     """
 
     if not INTERNAL_API_KEY:
+
         raise HTTPException(
             status_code=500,
-            detail="INTERNAL_API_KEY не настроен."
+            detail=(
+                "INTERNAL_API_KEY не настроен "
+                "в Railway Variables."
+            )
         )
 
     if (
@@ -308,11 +444,16 @@ def require_internal_api_key(
             INTERNAL_API_KEY
         )
     ):
+
         raise HTTPException(
             status_code=401,
             detail="Недействительный внутренний API ключ."
         )
 
+
+# ============================================================
+# ПОЛУЧЕНИЕ ВСЕХ СТРОК
+# ============================================================
 
 def fetch_all_rows(
     table: str,
@@ -325,16 +466,24 @@ def fetch_all_rows(
 
     while True:
 
-        response = (
-            supabase
-            .table(table)
-            .select(columns)
-            .range(
-                start,
-                start + page_size - 1
+        try:
+
+            response = (
+                supabase
+                .table(table)
+                .select(columns)
+                .range(
+                    start,
+                    start + page_size - 1
+                )
+                .execute()
             )
-            .execute()
-        )
+
+        except Exception as e:
+
+            raise RuntimeError(
+                f"Ошибка чтения таблицы {table}: {e}"
+            )
 
         chunk = response.data or []
 
@@ -358,7 +507,7 @@ def read_root():
     return {
         "status": "ok",
         "message": "Stalzone Auction API Running",
-        "version": "2.0"
+        "version": "2.1"
     }
 
 
@@ -367,7 +516,8 @@ def read_root():
 def health():
 
     return {
-        "status": "ok"
+        "status": "ok",
+        "version": "2.1"
     }
 
 
@@ -385,11 +535,6 @@ def generate_license(
 ):
     """
     Создание лицензии.
-
-    ВАЖНО:
-    endpoint защищён INTERNAL_API_KEY.
-
-    Его должен использовать bot.py после успешной оплаты.
     """
 
     require_internal_api_key(
@@ -397,6 +542,7 @@ def generate_license(
     )
 
     if data.telegram_id <= 0:
+
         raise HTTPException(
             status_code=400,
             detail="Некорректный telegram_id."
@@ -409,18 +555,24 @@ def generate_license(
     )
 
     if days <= 0 or days > 3650:
+
         raise HTTPException(
             status_code=400,
-            detail="Количество дней должно быть от 1 до 3650."
+            detail=(
+                "Количество дней должно быть "
+                "от 1 до 3650."
+            )
         )
 
     # --------------------------------------------------------
-    # Генерируем уникальный ключ.
+    # Генерируем уникальный ключ
     # --------------------------------------------------------
+
+    new_key = None
 
     for _ in range(10):
 
-        new_key = (
+        candidate = (
             "STZ-"
             + secrets.token_hex(8).upper()
         )
@@ -431,28 +583,33 @@ def generate_license(
                 supabase
                 .table("licenses")
                 .select("id")
-                .eq("key", new_key)
+                .eq("key", candidate)
                 .limit(1)
                 .execute()
             )
-
-            if not existing.data:
-                break
 
         except Exception as e:
 
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    f"Ошибка проверки уникальности ключа: {e}"
+                    "Ошибка проверки уникальности "
+                    "ключа."
                 )
             )
 
-    else:
+        if not existing.data:
+
+            new_key = candidate
+            break
+
+    if not new_key:
 
         raise HTTPException(
             status_code=500,
-            detail="Не удалось создать уникальный ключ."
+            detail=(
+                "Не удалось создать уникальный ключ."
+            )
         )
 
     expires_at = (
@@ -480,7 +637,9 @@ def generate_license(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Ошибка создания лицензии: {e}"
+            detail=(
+                f"Ошибка создания лицензии: {e}"
+            )
         )
 
     return {
@@ -518,7 +677,7 @@ def get_items_by_key(
     )
 
     # --------------------------------------------------------
-    # Сначала нормальная таблица items.
+    # Основной источник каталога — items
     # --------------------------------------------------------
 
     try:
@@ -538,11 +697,12 @@ def get_items_by_key(
     except Exception as e:
 
         print(
-            f"⚠️ Ошибка загрузки items: {e}"
+            "⚠️ Ошибка загрузки items: %s"
+            % e
         )
 
     # --------------------------------------------------------
-    # Запасной вариант — price_history.
+    # Запасной источник — price_history
     # --------------------------------------------------------
 
     try:
@@ -596,7 +756,9 @@ def get_items_by_key(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Ошибка загрузки каталога: {e}"
+            detail=(
+                f"Ошибка загрузки каталога: {e}"
+            )
         )
 
 
@@ -612,16 +774,14 @@ def get_item_price(
     license_key: Optional[str] = None,
     telegram_id: Optional[int] = None
 ):
-    """
-    Получение последней сохранённой цены.
-
-    Теперь лицензия обязательна.
-    """
 
     if not license_key:
+
         raise HTTPException(
             status_code=401,
-            detail="Необходимо передать license_key."
+            detail=(
+                "Необходимо передать license_key."
+            )
         )
 
     require_license(
@@ -638,6 +798,7 @@ def get_item_price(
     )
 
     if not item_id:
+
         raise HTTPException(
             status_code=400,
             detail="item_id не может быть пустым."
@@ -649,10 +810,19 @@ def get_item_price(
             supabase
             .table("price_history")
             .select(
-                "min_buyout_price, item_name, rarity, created_at"
+                "min_buyout_price, "
+                "item_name, "
+                "rarity, "
+                "created_at"
             )
-            .eq("item_id", item_id)
-            .eq("rarity", rarity)
+            .eq(
+                "item_id",
+                item_id
+            )
+            .eq(
+                "rarity",
+                rarity
+            )
             .order(
                 "created_at",
                 desc=True
@@ -686,7 +856,8 @@ def get_item_price(
     except Exception as e:
 
         print(
-            f"⚠️ Ошибка получения цены: {e}"
+            "⚠️ Ошибка получения цены: %s"
+            % e
         )
 
     return {
@@ -731,7 +902,10 @@ def get_history_by_key(
             supabase
             .table("price_history")
             .select("*")
-            .eq("item_id", item_id)
+            .eq(
+                "item_id",
+                item_id
+            )
             .order(
                 "created_at",
                 desc=True
@@ -749,12 +923,14 @@ def get_history_by_key(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Ошибка получения истории: {e}"
+            detail=(
+                f"Ошибка получения истории: {e}"
+            )
         )
 
 
 # ============================================================
-# СНАЙПЕРЫ
+# СОЗДАНИЕ СНАЙПЕРА
 # ============================================================
 
 @app.post("/snipers")
@@ -764,9 +940,6 @@ def create_sniper(
     data: SniperCreate,
     telegram_id: Optional[int] = None
 ):
-    """
-    Создаёт снайпер только для владельца лицензии.
-    """
 
     require_license(
         data.license_key,
@@ -774,6 +947,7 @@ def create_sniper(
     )
 
     if data.user_id <= 0:
+
         raise HTTPException(
             status_code=400,
             detail="Некорректный user_id."
@@ -783,13 +957,18 @@ def create_sniper(
         data.item_id
     )
 
-    item_name = data.item_name.strip()
+    item_name = (
+        data.item_name.strip()
+        if data.item_name
+        else ""
+    )
 
     rarity = clean_rarity(
         data.rarity
     )
 
     if not item_id:
+
         raise HTTPException(
             status_code=400,
             detail="item_id не может быть пустым."
@@ -836,7 +1015,7 @@ def create_sniper(
 
 
 # ============================================================
-# ПОЛУЧЕНИЕ СНАЙПЕРОВ ПОЛЬЗОВАТЕЛЯ
+# ПОЛУЧЕНИЕ СНАЙПЕРОВ
 # ============================================================
 
 @app.get("/snipers/{user_id}")
@@ -849,9 +1028,12 @@ def get_snipers(
 ):
 
     if not license_key:
+
         raise HTTPException(
             status_code=401,
-            detail="Необходимо передать license_key."
+            detail=(
+                "Необходимо передать license_key."
+            )
         )
 
     require_license(
@@ -865,7 +1047,10 @@ def get_snipers(
             supabase
             .table("user_snipers")
             .select("*")
-            .eq("user_id", user_id)
+            .eq(
+                "user_id",
+                user_id
+            )
             .eq(
                 "license_key",
                 clean_license_key(
@@ -884,7 +1069,9 @@ def get_snipers(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Ошибка получения снайперов: {e}"
+            detail=(
+                f"Ошибка получения снайперов: {e}"
+            )
         )
 
 
@@ -903,9 +1090,12 @@ def update_sniper_threshold(
 ):
 
     if not license_key:
+
         raise HTTPException(
             status_code=401,
-            detail="Необходимо передать license_key."
+            detail=(
+                "Необходимо передать license_key."
+            )
         )
 
     require_license(
@@ -917,15 +1107,16 @@ def update_sniper_threshold(
         license_key
     )
 
-    # Сначала убеждаемся, что снайпер принадлежит
-    # именно этому ключу.
     try:
 
         existing = (
             supabase
             .table("user_snipers")
             .select("*")
-            .eq("id", sniper_id)
+            .eq(
+                "id",
+                sniper_id
+            )
             .eq(
                 "license_key",
                 license_key
@@ -938,7 +1129,9 @@ def update_sniper_threshold(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Ошибка поиска снайпера: {e}"
+            detail=(
+                f"Ошибка поиска снайпера: {e}"
+            )
         )
 
     if not existing.data:
@@ -958,7 +1151,10 @@ def update_sniper_threshold(
                     data.threshold
                 )
             })
-            .eq("id", sniper_id)
+            .eq(
+                "id",
+                sniper_id
+            )
             .eq(
                 "license_key",
                 license_key
@@ -995,9 +1191,12 @@ def delete_single_sniper(
 ):
 
     if not license_key:
+
         raise HTTPException(
             status_code=401,
-            detail="Необходимо передать license_key."
+            detail=(
+                "Необходимо передать license_key."
+            )
         )
 
     require_license(
@@ -1015,7 +1214,10 @@ def delete_single_sniper(
             supabase
             .table("user_snipers")
             .select("id")
-            .eq("id", sniper_id)
+            .eq(
+                "id",
+                sniper_id
+            )
             .eq(
                 "license_key",
                 license_key
@@ -1035,7 +1237,10 @@ def delete_single_sniper(
             supabase
             .table("user_snipers")
             .delete()
-            .eq("id", sniper_id)
+            .eq(
+                "id",
+                sniper_id
+            )
             .eq(
                 "license_key",
                 license_key
@@ -1075,9 +1280,12 @@ def delete_all_user_snipers(
 ):
 
     if not license_key:
+
         raise HTTPException(
             status_code=401,
-            detail="Необходимо передать license_key."
+            detail=(
+                "Необходимо передать license_key."
+            )
         )
 
     require_license(
@@ -1095,7 +1303,10 @@ def delete_all_user_snipers(
             supabase
             .table("user_snipers")
             .delete()
-            .eq("user_id", user_id)
+            .eq(
+                "user_id",
+                user_id
+            )
             .eq(
                 "license_key",
                 license_key
@@ -1129,6 +1340,9 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
-        reload=True
+        port=int(
+            os.getenv("PORT", "8000")
+        ),
+        reload=False
     )
+```
