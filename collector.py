@@ -4,7 +4,7 @@ import time
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 from supabase import create_client, Client
@@ -14,23 +14,16 @@ from supabase import create_client, Client
 # НАСТРОЙКИ
 # ============================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-
-logger = logging.getLogger("auction_collector")
-
 REGION = os.getenv("STALCRAFT_REGION", "RU").upper()
 
 AUCTION_API = os.getenv(
     "AUCTION_API",
-    f"https://eapi.stalcraft.net/{REGION}/auction",
+    f"https://eapi.stalcraft.net/{REGION}/auction"
 )
 
-DATABASE_PATH = os.getenv(
+STALZONE_DATABASE_PATH = os.getenv(
     "STALZONE_DATABASE_PATH",
-    "/app/stalzone-database/ru/items/artefact",
+    "/app/stalzone-database/ru/items/artefact"
 )
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -39,25 +32,23 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 STALCRAFT_CLIENT_ID = os.getenv("STALCRAFT_CLIENT_ID")
 STALCRAFT_CLIENT_SECRET = os.getenv("STALCRAFT_CLIENT_SECRET")
 
-COLLECT_INTERVAL = int(
-    os.getenv("COLLECT_INTERVAL", "300")
+COLLECT_INTERVAL = int(os.getenv("COLLECT_INTERVAL", "300"))
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "30"))
+AUCTION_LIMIT = int(os.getenv("AUCTION_LIMIT", "200"))
+REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "0.15"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+
+
+# ============================================================
+# ЛОГИРОВАНИЕ
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-REQUEST_TIMEOUT = float(
-    os.getenv("REQUEST_TIMEOUT", "30")
-)
-
-AUCTION_LIMIT = int(
-    os.getenv("AUCTION_LIMIT", "200")
-)
-
-REQUEST_DELAY = float(
-    os.getenv("REQUEST_DELAY", "0.15")
-)
-
-MAX_RETRIES = int(
-    os.getenv("MAX_RETRIES", "3")
-)
+logger = logging.getLogger("collector")
 
 
 # ============================================================
@@ -72,162 +63,142 @@ required_env = {
 }
 
 missing_env = [
-    name
-    for name, value in required_env.items()
+    name for name, value in required_env.items()
     if not value
 ]
 
 if missing_env:
     raise RuntimeError(
-        "Не заданы переменные окружения: "
+        "Не заданы обязательные переменные окружения: "
         + ", ".join(missing_env)
     )
 
 
+# ============================================================
+# SUPABASE
+# ============================================================
+
 supabase: Client = create_client(
     SUPABASE_URL,
-    SUPABASE_KEY,
+    SUPABASE_KEY
 )
 
 
 # ============================================================
-# ОФИЦИАЛЬНАЯ ЛОКАЛЬНАЯ БАЗА
+# ОФИЦИАЛЬНАЯ ЛОКАЛЬНАЯ БАЗА STALZONE
 # ============================================================
 
 class LocalItemDatabase:
+    """
+    Официальная локальная база предметов.
 
-    def __init__(self, root_path: str):
-        self.root = Path(root_path)
+    ВАЖНО:
+    Именно эта база является источником:
+      - item_id
+      - названия
+      - цвета
+      - списка предметов
+
+    Supabase.items здесь НЕ используется как источник предметов.
+    """
+
+    def __init__(self, base_path: str):
+        self.base_path = Path(base_path)
         self.items: Dict[str, Dict[str, Any]] = {}
-
-        self.load()
-
-    def load(self):
-
-        if not self.root.exists():
-            raise FileNotFoundError(
-                f"Официальная база не найдена: {self.root}"
-            )
-
-        json_files = list(
-            self.root.rglob("*.json")
-        )
 
         logger.info(
             "Путь официальной базы: %s",
-            self.root,
+            self.base_path
         )
 
+        self.load()
+
+    def load(self) -> None:
+        if not self.base_path.exists():
+            raise FileNotFoundError(
+                f"Не найдена официальная база: {self.base_path}"
+            )
+
+        json_files = list(self.base_path.rglob("*.json"))
+
         logger.info(
-            "Найдено JSON-файлов: %s",
-            len(json_files),
+            "Найдено JSON-файлов: %d",
+            len(json_files)
         )
 
         for file_path in json_files:
-
             try:
-
                 with open(
                     file_path,
                     "r",
-                    encoding="utf-8",
+                    encoding="utf-8"
                 ) as f:
                     data = json.load(f)
-
-                if not isinstance(data, dict):
-                    continue
 
                 item_id = data.get("id")
 
                 if not item_id:
-                    item_id = file_path.stem
+                    continue
 
-                item_id = str(item_id)
+                name_data = data.get("name", {})
+                lines = name_data.get("lines", {})
 
-                name = self.extract_name(data)
-                color = self.extract_color(data)
+                name_ru = (
+                    lines.get("ru")
+                    or lines.get("en")
+                    or item_id
+                )
+
+                name_en = (
+                    lines.get("en")
+                    or name_ru
+                )
+
+                color = data.get("color")
+
+                category = data.get(
+                    "category",
+                    "artefact"
+                )
 
                 self.items[item_id] = {
-                    "item_id": item_id,
-                    "name": name,
+                    "id": item_id,
+                    "name": name_ru,
+                    "name_ru": name_ru,
+                    "name_en": name_en,
                     "color": color,
-                    "raw": data,
+                    "category": category,
                     "file": str(file_path),
                 }
 
             except Exception as e:
-
                 logger.warning(
                     "Ошибка чтения %s: %s",
                     file_path,
-                    e,
+                    e
                 )
 
         logger.info(
-            "Официальная база артефактов загружена: %s",
-            len(self.items),
+            "Официальная база: %s",
+            self.base_path
         )
 
-    @staticmethod
-    def extract_name(
-        data: Dict[str, Any]
-    ) -> str:
+        logger.info(
+            "Официальная база артефактов загружена: %d",
+            len(self.items)
+        )
 
-        name = data.get("name")
-
-        if isinstance(name, str):
-            return name
-
-        if isinstance(name, dict):
-
-            lines = name.get("lines")
-
-            if isinstance(lines, dict):
-
-                if lines.get("ru"):
-                    return str(lines["ru"])
-
-                if lines.get("en"):
-                    return str(lines["en"])
-
-            if name.get("text"):
-                return str(name["text"])
-
-        return "Unknown"
-
-    @staticmethod
-    def extract_color(
-        data: Dict[str, Any]
-    ) -> str:
-
-        color = data.get("color")
-
-        if color is None:
-            return "DEFAULT"
-
-        return str(color).strip().upper()
-
-    def get(
+    def get_item(
         self,
         item_id: str
     ) -> Optional[Dict[str, Any]]:
+        return self.items.get(item_id)
 
-        return self.items.get(
-            str(item_id)
-        )
+    def get_all_items(self) -> List[Dict[str, Any]]:
+        return list(self.items.values())
 
-    def get_all(
-        self
-    ) -> List[Dict[str, Any]]:
-
-        return list(
-            self.items.values()
-        )
-
-
-local_database = LocalItemDatabase(
-    DATABASE_PATH
-)
+    def get_item_ids(self) -> List[str]:
+        return list(self.items.keys())
 
 
 # ============================================================
@@ -235,119 +206,133 @@ local_database = LocalItemDatabase(
 # ============================================================
 
 COLOR_TO_RARITY = {
-
     "DEFAULT": "default",
-
     "GREEN": "green",
-
     "BLUE": "blue",
-
     "PURPLE": "purple",
-
     "GOLD": "gold",
-
     "YELLOW": "gold",
-
     "RED": "red",
 
+    # Возможные альтернативные обозначения
     "UNCOMMON": "green",
-
     "RARE": "blue",
-
     "EPIC": "purple",
-
     "LEGENDARY": "gold",
-
     "UNIQUE": "red",
 
-    "QUALITY_UNCOMMON": "green",
-
-    "QUALITY_RARE": "blue",
-
-    "QUALITY_EPIC": "purple",
-
-    "QUALITY_LEGENDARY": "gold",
-
-    "QUALITY_UNIQUE": "red",
+    "QUALITY_DEFAULT": "default",
+    "QUALITY_GREEN": "green",
+    "QUALITY_BLUE": "blue",
+    "QUALITY_PURPLE": "purple",
+    "QUALITY_GOLD": "gold",
+    "QUALITY_RED": "red",
 }
 
 
-def normalize_color(
-    color: Any
-) -> str:
-
+def normalize_color(color: Any) -> str:
     if color is None:
         return "DEFAULT"
 
-    return str(color).strip().upper()
+    value = str(color).strip().upper()
+
+    if not value:
+        return "DEFAULT"
+
+    return value
 
 
-def color_to_rarity(
-    color: Any
+def get_item_rarity(
+    item_id: str,
+    local_db: LocalItemDatabase
 ) -> str:
 
-    normalized = normalize_color(
-        color
+    item = local_db.get_item(item_id)
+
+    if not item:
+        return "default"
+
+    color = normalize_color(
+        item.get("color")
     )
 
-    return COLOR_TO_RARITY.get(
-        normalized,
-        normalized.lower(),
+    rarity = COLOR_TO_RARITY.get(
+        color,
+        "default"
     )
+
+    return rarity
 
 
 # ============================================================
-# OAUTH
+# OAUTH TOKEN
 # ============================================================
 
-_access_token: Optional[str] = None
+_token: Optional[str] = None
 _token_expires_at: float = 0
 
 
 async def get_access_token(
-    client: httpx.AsyncClient
+    force_refresh: bool = False
 ) -> str:
 
-    global _access_token
+    global _token
     global _token_expires_at
 
     now = time.time()
 
     if (
-        _access_token
-        and now < (_token_expires_at - 60)
+        not force_refresh
+        and _token
+        and now < _token_expires_at
     ):
-        return _access_token
+        return _token
 
-    response = await client.post(
-        "https://exbo.net/oauth/token",
-        data={
-            "grant_type": "client_credentials",
-            "client_id": STALCRAFT_CLIENT_ID,
-            "client_secret": STALCRAFT_CLIENT_SECRET,
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
+    url = "https://exbo.net/oauth/token"
 
-    response.raise_for_status()
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": STALCRAFT_CLIENT_ID,
+        "client_secret": STALCRAFT_CLIENT_SECRET,
+    }
 
-    data = response.json()
+    async with httpx.AsyncClient(
+        timeout=REQUEST_TIMEOUT
+    ) as client:
 
-    _access_token = data["access_token"]
+        response = await client.post(
+            url,
+            data=data
+        )
+
+        response.raise_for_status()
+
+        result = response.json()
+
+    access_token = result.get("access_token")
+
+    if not access_token:
+        raise RuntimeError(
+            "OAuth не вернул access_token"
+        )
 
     expires_in = int(
-        data.get("expires_in", 3600)
+        result.get("expires_in", 3600)
     )
 
+    _token = access_token
+
+    # Обновляем немного заранее
     _token_expires_at = (
-        time.time() + expires_in
+        time.time()
+        + max(expires_in - 60, 60)
     )
 
     logger.info(
         "Получен новый STALCRAFT access token"
     )
 
-    return _access_token
+    return _token
 
 
 # ============================================================
@@ -355,19 +340,11 @@ async def get_access_token(
 # ============================================================
 
 async def fetch_auction_lots(
-    client: httpx.AsyncClient,
-    item_id: str,
-) -> List[Dict[str, Any]]:
-
-    global _access_token
-
-    token = await get_access_token(
-        client
-    )
+    item_id: str
+) -> Optional[List[Dict[str, Any]]]:
 
     url = (
-        f"{AUCTION_API}/"
-        f"{item_id}/lots"
+        f"{AUCTION_API}/{item_id}/lots"
     )
 
     params = {
@@ -377,35 +354,37 @@ async def fetch_auction_lots(
         "additional": "true",
     }
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1,
-    ):
+    for attempt in range(1, MAX_RETRIES + 1):
 
         try:
+            token = await get_access_token()
 
-            response = await client.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=REQUEST_TIMEOUT,
-            )
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            }
 
-            if response.status_code == 401:
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT
+            ) as client:
 
-                _access_token = None
-
-                token = await get_access_token(
-                    client
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=headers
                 )
 
-                headers["Authorization"] = (
-                    f"Bearer {token}"
+            # Токен протух
+            if response.status_code == 401:
+
+                logger.warning(
+                    "Auction API 401 | ID=%s | "
+                    "обновляем токен",
+                    item_id
+                )
+
+                await get_access_token(
+                    force_refresh=True
                 )
 
                 continue
@@ -414,400 +393,314 @@ async def fetch_auction_lots(
 
             data = response.json()
 
-            if isinstance(data, dict):
+            # API может возвращать список
+            if isinstance(data, list):
+                lots = data
 
-                lots = data.get("lots")
-
-                if lots is None:
-                    lots = data.get("data")
+            # Или объект с lots
+            elif isinstance(data, dict):
+                lots = data.get("lots", [])
 
                 if lots is None:
                     lots = []
 
-            elif isinstance(data, list):
-
-                lots = data
-
             else:
-
                 lots = []
 
-            if not isinstance(
-                lots,
-                list
-            ):
-                lots = []
+            logger.info(
+                "Auction API | ID=%s | лотов=%d",
+                item_id,
+                len(lots)
+            )
 
-            return [
-                lot
-                for lot in lots
-                if isinstance(
-                    lot,
-                    dict
-                )
-            ]
+            return lots
 
         except Exception as e:
 
             logger.warning(
-                "Auction API ошибка | "
-                "ID=%s | попытка=%s/%s | %s",
+                "Auction API ERROR | ID=%s | "
+                "попытка=%d/%d | %s",
                 item_id,
                 attempt,
                 MAX_RETRIES,
-                e,
+                e
             )
 
             if attempt < MAX_RETRIES:
-
                 await asyncio.sleep(
-                    attempt * 1.5
+                    attempt * 2
                 )
 
     logger.error(
         "Auction API окончательно не ответил | ID=%s",
-        item_id,
+        item_id
     )
-
-    return []
-
-
-# ============================================================
-# ЧИСЛО
-# ============================================================
-
-def extract_number(
-    value: Any
-) -> Optional[float]:
-
-    if isinstance(value, bool):
-        return None
-
-    if isinstance(
-        value,
-        (int, float)
-    ):
-        return float(value)
-
-    if isinstance(value, str):
-
-        value = value.strip()
-
-        if not value:
-            return None
-
-        try:
-            return float(value)
-
-        except ValueError:
-            return None
-
-    if isinstance(value, dict):
-
-        for key in (
-            "amount",
-            "value",
-            "price",
-        ):
-
-            if key in value:
-
-                result = extract_number(
-                    value[key]
-                )
-
-                if result is not None:
-                    return result
 
     return None
 
 
 # ============================================================
-# ЦЕНА ВЫКУПА
+# ПОЛУЧЕНИЕ BUYOUT PRICE
 # ============================================================
 
-def get_lot_buyout_price(
+def extract_buyout_price(
     lot: Dict[str, Any]
 ) -> Optional[float]:
 
-    # Основное поле Auction API
-    for key in (
+    """
+    Берём ТОЛЬКО реальную цену выкупа.
+
+    Никаких искусственных fallback-цен.
+    """
+
+    possible_keys = [
         "buyoutPrice",
         "buyout_price",
         "buyout",
-    ):
+        "price",
+    ]
 
-        if key not in lot:
-            continue
+    # Сначала основной объект
+    for key in possible_keys:
 
-        price = extract_number(
-            lot[key]
-        )
+        value = lot.get(key)
 
-        if (
-            price is not None
-            and price > 0
-        ):
-            return price
+        if value is not None:
+            try:
+                price = float(value)
 
-    # Дополнительные варианты
-    if "price" in lot:
+                if price > 0:
+                    return price
 
-        price = extract_number(
-            lot["price"]
-        )
+            except (
+                TypeError,
+                ValueError
+            ):
+                pass
 
-        if (
-            price is not None
-            and price > 0
-        ):
-            return price
-
+    # Затем additional
     additional = lot.get(
-        "additional"
+        "additional",
+        {}
     )
 
-    if isinstance(
-        additional,
-        dict
-    ):
+    if isinstance(additional, dict):
 
-        for key in (
-            "buyoutPrice",
-            "buyout_price",
-            "buyout",
-            "price",
-        ):
+        for key in possible_keys:
 
-            if key not in additional:
-                continue
+            value = additional.get(key)
 
-            price = extract_number(
-                additional[key]
-            )
+            if value is not None:
+                try:
+                    price = float(value)
 
-            if (
-                price is not None
-                and price > 0
-            ):
-                return price
+                    if price > 0:
+                        return price
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+                    pass
 
     return None
 
 
 # ============================================================
-# КОЛИЧЕСТВО
+# КОЛИЧЕСТВО ПРЕДМЕТОВ В ЛОТЕ
 # ============================================================
 
 def get_lot_amount(
     lot: Dict[str, Any]
 ) -> int:
 
-    amount = lot.get(
-        "amount"
-    )
+    value = lot.get("amount")
 
-    if amount is None:
+    if value is None:
 
         additional = lot.get(
-            "additional"
+            "additional",
+            {}
         )
 
-        if isinstance(
-            additional,
-            dict
-        ):
-
-            amount = additional.get(
-                "amount",
-                1,
+        if isinstance(additional, dict):
+            value = additional.get(
+                "amount"
             )
 
     try:
+        amount = int(value)
 
-        amount = int(
-            amount
-        )
+        if amount > 0:
+            return amount
 
-        if amount <= 0:
-            return 1
+    except (
+        TypeError,
+        ValueError
+    ):
+        pass
 
-        return amount
-
-    except Exception:
-
-        return 1
-
-
-# ============================================================
-# РЕДКОСТЬ
-# ============================================================
-
-def get_item_rarity(
-    item_id: str
-) -> Tuple[str, str]:
-
-    item = local_database.get(
-        item_id
-    )
-
-    if not item:
-
-        return (
-            "default",
-            "DEFAULT",
-        )
-
-    color = item.get(
-        "color",
-        "DEFAULT",
-    )
-
-    rarity = color_to_rarity(
-        color
-    )
-
-    return (
-        rarity,
-        normalize_color(color),
-    )
+    return 1
 
 
 # ============================================================
-# СТАТИСТИКА ЛОТОВ
+# СТАТИСТИКА ПРЕДМЕТА
 # ============================================================
 
-def collect_item_statistics(
+async def collect_item_statistics(
     item_id: str,
-    lots: List[Dict[str, Any]],
+    local_db: LocalItemDatabase
 ) -> Optional[Dict[str, Any]]:
 
-    item = local_database.get(
-        item_id
-    )
+    item = local_db.get_item(item_id)
 
     if not item:
+        logger.warning(
+            "Предмет отсутствует в официальной базе | ID=%s",
+            item_id
+        )
+
         return None
 
-    rarity, color = get_item_rarity(
+    item_name = item.get(
+        "name",
         item_id
     )
+
+    color = normalize_color(
+        item.get("color")
+    )
+
+    rarity = COLOR_TO_RARITY.get(
+        color,
+        "default"
+    )
+
+    lots = await fetch_auction_lots(
+        item_id
+    )
+
+    if lots is None:
+        return None
 
     prices: List[float] = []
 
     for lot in lots:
 
-        price = get_lot_buyout_price(
+        if not isinstance(lot, dict):
+            continue
+
+        price = extract_buyout_price(
             lot
         )
 
-        if price is None:
-            continue
-
-        prices.append(
-            price
-        )
+        if price is not None and price > 0:
+            prices.append(price)
 
     if not prices:
+
+        logger.info(
+            "ID=%s | %s | "
+            "нет активных лотов с buyout",
+            item_id,
+            item_name
+        )
 
         return None
 
     prices.sort()
 
-    min_price = prices[0]
+    min_buyout_price = prices[0]
 
     total_lots = len(prices)
 
+    logger.info(
+        "ID=%s | %s | "
+        "цвет=%s | редкость=%s | "
+        "min=%s | лотов=%d",
+        item_id,
+        item_name,
+        color,
+        rarity,
+        min_buyout_price,
+        total_lots
+    )
+
     return {
         "item_id": item_id,
-        "item_name": item.get(
-            "name",
-            "Unknown",
-        ),
+        "item_name": item_name,
         "rarity": rarity,
         "color": color,
         "category": "artefact",
         "variant": None,
-        "min_buyout_price": float(
-            min_price
-        ),
-        "total_lots": int(
-            total_lots
-        ),
+
+        "min_buyout_price": min_buyout_price,
+        "total_lots": total_lots,
+
         "buyout_prices": prices,
     }
 
 
 # ============================================================
-# SUPABASE
+# СОХРАНЕНИЕ В SUPABASE
 # ============================================================
 
 async def save_price_history(
     statistics: Dict[str, Any]
 ) -> bool:
 
-    """
-    Записывает одну агрегированную строку
-    в price_history.
+    item_id = statistics["item_id"]
+    item_name = statistics["item_name"]
+    rarity = statistics["rarity"]
 
-    Используем реальные колонки таблицы:
-
-        item_id
-        item_name
-        min_buyout_price
-        total_lots
-        rarity
-        category
-        variant
-        buyout_price
-
-    """
-
-    item_id = statistics[
-        "item_id"
-    ]
-
-    item_name = statistics[
-        "item_name"
-    ]
-
-    rarity = statistics[
-        "rarity"
-    ]
-
-    min_buyout_price = statistics[
-        "min_buyout_price"
-    ]
-
-    total_lots = statistics[
-        "total_lots"
-    ]
-
-    category = statistics[
-        "category"
-    ]
-
-    variant = statistics[
-        "variant"
-    ]
-
-    # Сохраняем минимальную цену как
-    # buyout_price текущего среза.
+    # ========================================================
+    # ВАЖНО:
+    # Supabase price_history:
     #
-    # Если позже понадобится сохранять
-    # каждый отдельный лот, это можно
-    # сделать отдельно.
+    # min_buyout_price -> BIGINT
+    # buyout_price     -> BIGINT
+    #
+    # Поэтому здесь обязательно int().
+    # ========================================================
 
-    buyout_price = min_buyout_price
+    min_buyout_price = int(
+        round(
+            float(
+                statistics["min_buyout_price"]
+            )
+        )
+    )
+
+    total_lots = int(
+        statistics["total_lots"]
+    )
+
+    category = statistics.get(
+        "category",
+        "artefact"
+    )
+
+    variant = statistics.get(
+        "variant"
+    )
+
+    # Сейчас buyout_price =
+    # минимальная цена выкупа.
+    buyout_price = int(
+        min_buyout_price
+    )
 
     payload = {
         "item_id": item_id,
         "item_name": item_name,
+
         "min_buyout_price": min_buyout_price,
         "total_lots": total_lots,
+
         "rarity": rarity,
         "category": category,
         "variant": variant,
+
         "buyout_price": buyout_price,
     }
 
@@ -824,11 +717,11 @@ async def save_price_history(
 
         logger.info(
             "SUPABASE OK | price_history | "
-            "ID=%s | %s | min=%s | lots=%s",
+            "ID=%s | %s | min=%d | lots=%d",
             item_id,
             rarity,
-            int(min_buyout_price),
-            total_lots,
+            min_buyout_price,
+            total_lots
         )
 
         return True
@@ -839,112 +732,19 @@ async def save_price_history(
             "SUPABASE ERROR | price_history | "
             "payload=%s | error=%s",
             payload,
-            e,
+            e
         )
 
         return False
 
 
 # ============================================================
-# СБОР ОДНОГО ПРЕДМЕТА
+# МОНИТОРИНГ СНАЙПЕРОВ
 # ============================================================
 
-async def collect_item(
-    client: httpx.AsyncClient,
-    item: Dict[str, Any],
+async def monitor_snipers(
+    local_db: LocalItemDatabase
 ) -> None:
-
-    item_id = str(
-        item.get("item_id")
-    )
-
-    item_name = item.get(
-        "name",
-        "Unknown",
-    )
-
-    lots = await fetch_auction_lots(
-        client,
-        item_id,
-    )
-
-    logger.info(
-        "Auction API | ID=%s | %s | лотов=%s",
-        item_id,
-        item_name,
-        len(lots),
-    )
-
-    if not lots:
-
-        logger.info(
-            "ID=%s | %s | активных лотов нет",
-            item_id,
-            item_name,
-        )
-
-        return
-
-    statistics = (
-        collect_item_statistics(
-            item_id,
-            lots,
-        )
-    )
-
-    if not statistics:
-
-        logger.info(
-            "ID=%s | %s | "
-            "нет валидных buyout цен",
-            item_id,
-            item_name,
-        )
-
-        return
-
-    logger.info(
-        "ID=%s | %s | "
-        "цвет=%s | редкость=%s | "
-        "min=%s | валидных лотов=%s",
-        item_id,
-        item_name,
-        statistics["color"],
-        statistics["rarity"],
-        int(
-            statistics[
-                "min_buyout_price"
-            ]
-        ),
-        statistics["total_lots"],
-    )
-
-    await save_price_history(
-        statistics
-    )
-
-
-# ============================================================
-# СПИСОК ПРЕДМЕТОВ
-# ============================================================
-
-def load_tracked_items() -> List[Dict[str, Any]]:
-
-    items = local_database.get_all()
-
-    logger.info(
-        "Загружено предметов из официальной базы: %s",
-        len(items),
-    )
-
-    return items
-
-
-# ============================================================
-# USER SNIPERS
-# ============================================================
-
-async def monitor_snipers():
 
     try:
 
@@ -957,42 +757,37 @@ async def monitor_snipers():
             )
         )
 
-        rows = result.data or []
+        snipers = result.data or []
 
         logger.info(
-            "Загружено настроек снайперов: %s",
-            len(rows),
+            "Загружено настроек снайперов: %d",
+            len(snipers)
         )
 
-        valid = 0
-
-        for row in rows:
+        for sniper in snipers:
 
             item_id = (
-                row.get("item_id")
-                or row.get("itemId")
+                sniper.get("item_id")
+                or sniper.get("itemId")
             )
 
             if not item_id:
                 continue
 
-            if local_database.get(
-                str(item_id)
+            if not local_db.get_item(
+                item_id
             ):
-
-                valid += 1
-
-        logger.info(
-            "Валидных снайперов "
-            "по официальной базе: %s",
-            valid,
-        )
+                logger.warning(
+                    "Снайпер содержит ID, "
+                    "которого нет в официальной базе: %s",
+                    item_id
+                )
 
     except Exception as e:
 
         logger.error(
-            "Ошибка мониторинга user_snipers: %s",
-            e,
+            "Ошибка чтения user_snipers: %s",
+            e
         )
 
 
@@ -1000,79 +795,68 @@ async def monitor_snipers():
 # ОСНОВНОЙ ЦИКЛ
 # ============================================================
 
-async def collector_loop():
+async def collector_loop(
+    local_db: LocalItemDatabase
+) -> None:
 
     logger.info(
         "Запущен основной сборщик аукциона"
     )
 
-    logger.info(
-        "Путь официальной базы: %s",
-        DATABASE_PATH,
-    )
+    items = local_db.get_all_items()
 
     logger.info(
-        "Предметов в официальной базе: %s",
-        len(
-            local_database.get_all()
-        ),
+        "Загружено предметов "
+        "из официальной базы: %d",
+        len(items)
     )
 
-    items = load_tracked_items()
+    first_lot_logged = False
 
-    if not items:
+    while True:
 
-        logger.error(
-            "Официальная база пуста!"
+        cycle_start = time.time()
+
+        logger.info(
+            "========== НОВЫЙ ЦИКЛ СБОРА =========="
         )
 
-        return
+        successful = 0
+        saved = 0
 
-    async with httpx.AsyncClient(
-        follow_redirects=True
-    ) as client:
+        for item in items:
 
-        first_dump_done = False
+            item_id = item["id"]
 
-        while True:
+            try:
 
-            cycle_start = time.time()
-
-            logger.info(
-                "========== НОВЫЙ ЦИКЛ СБОРА =========="
-            )
-
-            for item in items:
-
-                item_id = str(
-                    item.get("item_id")
+                statistics = (
+                    await collect_item_statistics(
+                        item_id,
+                        local_db
+                    )
                 )
 
-                try:
+                if statistics is None:
+                    continue
+
+                successful += 1
+
+                # =================================================
+                # ЛОГ ПЕРВОГО ЛОТА
+                # =================================================
+
+                if not first_lot_logged:
 
                     lots = await fetch_auction_lots(
-                        client,
-                        item_id,
+                        item_id
                     )
 
-                    logger.info(
-                        "Auction API | ID=%s | %s | лотов=%s",
-                        item_id,
-                        item.get("name"),
-                        len(lots),
-                    )
-
-                    # ------------------------------------------------
-                    # Показываем первый реальный лот.
-                    # ------------------------------------------------
-
-                    if (
-                        lots
-                        and not first_dump_done
-                    ):
+                    if lots:
 
                         logger.warning(
-                            "========== ПРИМЕР ЛОТА AUCTION API =========="
+                            "========== ПРИМЕР ЛОТА "
+                            "AUCTION API =========="
                         )
 
                         try:
@@ -1081,151 +865,124 @@ async def collector_loop():
                                 json.dumps(
                                     lots[0],
                                     ensure_ascii=False,
-                                    indent=2,
+                                    indent=2
                                 )
                             )
 
                         except Exception:
-
                             logger.warning(
-                                "%s",
-                                lots[0],
+                                str(lots[0])
                             )
 
                         logger.warning(
-                            "================================================"
+                            "=============================================="
                         )
 
-                        first_dump_done = True
+                    first_lot_logged = True
 
-                    if not lots:
+                # =================================================
+                # СУПАБЕЙЗ
+                # =================================================
 
-                        await asyncio.sleep(
-                            REQUEST_DELAY
-                        )
+                if await save_price_history(
+                    statistics
+                ):
+                    saved += 1
 
-                        continue
+            except Exception as e:
 
-                    statistics = (
-                        collect_item_statistics(
-                            item_id,
-                            lots,
-                        )
-                    )
-
-                    if not statistics:
-
-                        logger.info(
-                            "ID=%s | %s | "
-                            "нет валидных buyout цен",
-                            item_id,
-                            item.get("name"),
-                        )
-
-                        await asyncio.sleep(
-                            REQUEST_DELAY
-                        )
-
-                        continue
-
-                    logger.info(
-                        "ID=%s | %s | "
-                        "цвет=%s | редкость=%s | "
-                        "min=%s | лотов=%s",
-                        item_id,
-                        item.get("name"),
-                        statistics["color"],
-                        statistics["rarity"],
-                        int(
-                            statistics[
-                                "min_buyout_price"
-                            ]
-                        ),
-                        statistics["total_lots"],
-                    )
-
-                    await save_price_history(
-                        statistics
-                    )
-
-                except Exception as e:
-
-                    logger.exception(
-                        "Ошибка обработки ID=%s: %s",
-                        item_id,
-                        e,
-                    )
-
-                await asyncio.sleep(
-                    REQUEST_DELAY
+                logger.exception(
+                    "Ошибка обработки ID=%s: %s",
+                    item_id,
+                    e
                 )
 
-            await monitor_snipers()
-
-            elapsed = (
-                time.time()
-                - cycle_start
-            )
-
-            sleep_time = max(
-                0,
-                COLLECT_INTERVAL
-                - elapsed,
-            )
-
-            logger.info(
-                "========== ЦИКЛ ЗАВЕРШЁН =========="
-            )
-
-            logger.info(
-                "Время цикла: %.1f сек.",
-                elapsed,
-            )
-
-            logger.info(
-                "Следующий цикл через: %.1f сек.",
-                sleep_time,
-            )
-
             await asyncio.sleep(
-                sleep_time
+                REQUEST_DELAY
             )
+
+        # ========================================================
+        # СНАЙПЕРЫ
+        # ========================================================
+
+        await monitor_snipers(
+            local_db
+        )
+
+        cycle_time = (
+            time.time()
+            - cycle_start
+        )
+
+        logger.info(
+            "========== ЦИКЛ ЗАВЕРШЁН =========="
+        )
+
+        logger.info(
+            "Обработано успешно: %d/%d",
+            successful,
+            len(items)
+        )
+
+        logger.info(
+            "Записано в price_history: %d",
+            saved
+        )
+
+        logger.info(
+            "Время цикла: %.2f сек.",
+            cycle_time
+        )
+
+        sleep_time = max(
+            0,
+            COLLECT_INTERVAL - cycle_time
+        )
+
+        logger.info(
+            "Следующий цикл через %.2f сек.",
+            sleep_time
+        )
+
+        await asyncio.sleep(
+            sleep_time
+        )
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-async def main():
+async def main() -> None:
 
     logger.info(
         "STALZONE Auction Collector запускается..."
     )
 
     logger.info(
-        "Регион STALCRAFT: %s",
-        REGION,
-    )
-
-    logger.info(
-        "Auction API: %s",
-        AUCTION_API,
-    )
-
-    logger.info(
         "Официальная база: %s",
-        DATABASE_PATH,
+        STALZONE_DATABASE_PATH
+    )
+
+    local_db = LocalItemDatabase(
+        STALZONE_DATABASE_PATH
     )
 
     logger.info(
-        "Предметов в официальной базе: %s",
+        "Предметов в официальной базе: %d",
         len(
-            local_database.get_all()
-        ),
+            local_db.get_all_items()
+        )
     )
 
-    await collector_loop()
+    await collector_loop(
+        local_db
+    )
 
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
 
 if __name__ == "__main__":
 
@@ -1245,5 +1002,5 @@ if __name__ == "__main__":
 
         logger.exception(
             "Критическая ошибка collector: %s",
-            e,
+            e
         )
