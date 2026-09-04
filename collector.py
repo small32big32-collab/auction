@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,9 +21,6 @@ STALCRAFT_CLIENT_SECRET = os.getenv("STALCRAFT_CLIENT_SECRET")
 
 TOKEN_URL = "https://exbo.net/oauth/token"
 
-# ВАЖНО:
-# Активные лоты находятся по:
-# /RU/auction/{item_id}/lots
 AUCTION_BASE_URL = "https://eapi.stalcraft.net"
 
 DATABASE_PATH = Path(
@@ -50,7 +48,7 @@ REQUEST_RETRIES = int(
 
 
 # ============================================================
-# CONFIG VALIDATION
+# VALIDATION
 # ============================================================
 
 if not SUPABASE_URL:
@@ -60,10 +58,14 @@ if not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_KEY is not set")
 
 if not STALCRAFT_CLIENT_ID:
-    raise RuntimeError("STALCRAFT_CLIENT_ID is not set")
+    raise RuntimeError(
+        "STALCRAFT_CLIENT_ID is not set"
+    )
 
 if not STALCRAFT_CLIENT_SECRET:
-    raise RuntimeError("STALCRAFT_CLIENT_SECRET is not set")
+    raise RuntimeError(
+        "STALCRAFT_CLIENT_SECRET is not set"
+    )
 
 
 # ============================================================
@@ -123,24 +125,30 @@ COLOR_TO_RARITY = {
 # HELPERS
 # ============================================================
 
-def normalize_string(value: Any) -> Optional[str]:
-    """
-    Безопасно получает строковое значение.
+def to_int(value: Any) -> Optional[int]:
 
-    Для STALZONE database name обычно имеет вид:
+    if value is None:
+        return None
 
-    {
-        "key": "...",
-        "lines": {
-            "ru": "Название"
-        }
-    }
-    """
+    if isinstance(value, bool):
+        return None
+
+    try:
+        return int(round(float(value)))
+
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_string(
+    value: Any,
+) -> Optional[str]:
 
     if value is None:
         return None
 
     if isinstance(value, str):
+
         value = value.strip()
 
         return value if value else None
@@ -153,46 +161,69 @@ def normalize_string(value: Any) -> Optional[str]:
 
             ru = lines.get("ru")
 
-            if isinstance(ru, str) and ru.strip():
-                return ru.strip()
+            if isinstance(ru, str):
+                if ru.strip():
+                    return ru.strip()
 
             en = lines.get("en")
 
-            if isinstance(en, str) and en.strip():
-                return en.strip()
+            if isinstance(en, str):
+                if en.strip():
+                    return en.strip()
 
         ru = value.get("ru")
 
-        if isinstance(ru, str) and ru.strip():
-            return ru.strip()
+        if isinstance(ru, str):
+            if ru.strip():
+                return ru.strip()
 
         name = value.get("name")
 
-        if isinstance(name, str) and name.strip():
-            return name.strip()
+        if isinstance(name, str):
+            if name.strip():
+                return name.strip()
 
     return None
 
 
-def normalize_category(value: Any) -> str:
-    """
-    Приводит category к строке.
-    """
+def get_json_name(
+    data: Dict[str, Any],
+) -> Optional[str]:
+
+    result = normalize_string(
+        data.get("name")
+    )
+
+    if result:
+        return result
+
+    return normalize_string(
+        data.get("title")
+    )
+
+
+def normalize_category(
+    value: Any,
+) -> str:
 
     if isinstance(value, str):
-        return value.strip()
+
+        return value.strip() or "artefact"
 
     if isinstance(value, list):
 
-        values = [
-            str(x).strip()
-            for x in value
-            if x is not None
-        ]
+        values = []
 
-        return "/".join(
-            x for x in values if x
-        )
+        for item in value:
+
+            if isinstance(item, str):
+                if item.strip():
+                    values.append(
+                        item.strip()
+                    )
+
+        if values:
+            return "/".join(values)
 
     if isinstance(value, dict):
 
@@ -215,15 +246,6 @@ def normalize_category(value: Any) -> str:
 def detect_json_rarity(
     obj: Any,
 ) -> Optional[str]:
-    """
-    Рекурсивно ищет редкость в официальном JSON.
-
-    ВАЖНО:
-    Проверяем key только если это str.
-    Это предотвращает ошибку:
-
-        TypeError: unhashable type: 'dict'
-    """
 
     if isinstance(obj, dict):
 
@@ -231,8 +253,10 @@ def detect_json_rarity(
 
         if isinstance(key, str):
 
-            rarity = QUALITY_KEY_TO_RARITY.get(
-                key
+            rarity = (
+                QUALITY_KEY_TO_RARITY.get(
+                    key
+                )
             )
 
             if rarity:
@@ -242,8 +266,10 @@ def detect_json_rarity(
 
         if isinstance(color, str):
 
-            rarity = COLOR_TO_RARITY.get(
-                color.upper()
+            rarity = (
+                COLOR_TO_RARITY.get(
+                    color.upper()
+                )
             )
 
             if rarity:
@@ -272,58 +298,66 @@ def detect_json_rarity(
     return None
 
 
-def get_json_name(
-    data: Dict[str, Any],
-) -> Optional[str]:
+# ============================================================
+# RECURSIVE VALUE SEARCH
+# ============================================================
 
-    result = normalize_string(
-        data.get("name")
-    )
+def find_value_recursive(
+    obj: Any,
+    keys: Tuple[str, ...],
+) -> Any:
+    """
+    Рекурсивно ищет ключи в JSON.
 
-    if result:
-        return result
+    Например:
+        additional -> ptn
+        additional -> qlt
 
-    return normalize_string(
-        data.get("title")
-    )
+    Это нужно потому, что auction lot может иметь
+    характеристики не на верхнем уровне.
+    """
 
+    if isinstance(obj, dict):
 
-def to_int(
-    value: Any,
-) -> Optional[int]:
+        for key in keys:
 
-    if value is None:
-        return None
+            if key in obj:
 
-    if isinstance(value, bool):
-        return None
+                value = obj.get(key)
 
-    try:
-        return int(
-            round(
-                float(value)
+                if value is not None:
+                    return value
+
+        for value in obj.values():
+
+            result = find_value_recursive(
+                value,
+                keys,
             )
-        )
 
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return None
+            if result is not None:
+                return result
+
+    elif isinstance(obj, list):
+
+        for value in obj:
+
+            result = find_value_recursive(
+                value,
+                keys,
+            )
+
+            if result is not None:
+                return result
+
+    return None
 
 
 # ============================================================
-# LOCAL ITEM DATABASE
+# LOCAL DATABASE
 # ============================================================
 
 class LocalItemDatabase:
-    """
-    Локальная официальная STALZONE database.
-
-    ИМЕННО ОНА является источником списка предметов.
-
-    Supabase.items здесь НЕ используется.
-    """
 
     def __init__(
         self,
@@ -332,15 +366,11 @@ class LocalItemDatabase:
 
         self.database_path = database_path
 
-        # item_id -> основная информация
         self.items: Dict[
             str,
             Dict[str, Any],
         ] = {}
 
-        # item_id -> {
-        #     ptn: json
-        # }
         self.variants: Dict[
             str,
             Dict[int, Dict[str, Any]],
@@ -364,7 +394,7 @@ class LocalItemDatabase:
                 f"{self.database_path}"
             )
 
-        json_files = list(
+        files = list(
             self.database_path.rglob(
                 "*.json"
             )
@@ -372,17 +402,13 @@ class LocalItemDatabase:
 
         print(
             f"LOCAL DB | JSON files: "
-            f"{len(json_files)}"
+            f"{len(files)}"
         )
-
-        # ----------------------------------------------------
-        # Сначала основные JSON
-        # ----------------------------------------------------
 
         main_files = []
         variant_files = []
 
-        for file_path in json_files:
+        for file_path in files:
 
             if "_variants" in file_path.parts:
                 variant_files.append(
@@ -393,23 +419,17 @@ class LocalItemDatabase:
                     file_path
                 )
 
-        # ----------------------------------------------------
-        # MAIN ITEMS
-        # ----------------------------------------------------
-
+        # Сначала основные предметы
         for file_path in main_files:
 
-            self._load_main_item(
+            self.load_main_item(
                 file_path
             )
 
-        # ----------------------------------------------------
-        # VARIANTS
-        # ----------------------------------------------------
-
+        # Затем варианты
         for file_path in variant_files:
 
-            self._load_variant(
+            self.load_variant(
                 file_path
             )
 
@@ -424,10 +444,10 @@ class LocalItemDatabase:
         )
 
     # --------------------------------------------------------
-    # LOAD MAIN ITEM
+    # MAIN ITEM
     # --------------------------------------------------------
 
-    def _load_main_item(
+    def load_main_item(
         self,
         file_path: Path,
     ) -> None:
@@ -437,16 +457,16 @@ class LocalItemDatabase:
             with file_path.open(
                 "r",
                 encoding="utf-8",
-            ) as f:
+            ) as file:
 
-                data = json.load(f)
+                data = json.load(file)
 
         except Exception as e:
 
             print(
                 f"LOCAL DB | "
-                f"ERROR reading {file_path}: "
-                f"{e}"
+                f"ERROR reading "
+                f"{file_path}: {e}"
             )
 
             return
@@ -457,7 +477,9 @@ class LocalItemDatabase:
         ):
             return
 
-        item_id = data.get("id")
+        item_id = data.get(
+            "id"
+        )
 
         if not isinstance(
             item_id,
@@ -478,10 +500,6 @@ class LocalItemDatabase:
             data
         )
 
-        color = data.get(
-            "color"
-        )
-
         category = normalize_category(
             data.get("category")
         )
@@ -490,78 +508,61 @@ class LocalItemDatabase:
             "id": item_id,
             "name": name or item_id,
             "rarity": rarity,
-            "color": color,
             "category": category,
-            "path": str(file_path),
+            "color": data.get(
+                "color"
+            ),
+            "path": str(
+                file_path
+            ),
         }
 
     # --------------------------------------------------------
-    # LOAD VARIANT
+    # VARIANT
     # --------------------------------------------------------
 
-    def _load_variant(
+    def load_variant(
         self,
         file_path: Path,
     ) -> None:
 
+        parts = file_path.parts
+
         try:
 
-            parts = file_path.parts
-
-            variants_index = parts.index(
+            index = parts.index(
                 "_variants"
             )
 
-            if (
-                variants_index + 2
-                >= len(parts)
-            ):
-                return
-
             item_id = parts[
-                variants_index + 1
+                index + 1
             ]
-
-            filename = file_path.stem
-
-            if not filename.isdigit():
-                return
-
-            ptn = int(filename)
 
         except Exception:
             return
+
+        if not file_path.stem.isdigit():
+            return
+
+        ptn = int(
+            file_path.stem
+        )
 
         try:
 
             with file_path.open(
                 "r",
                 encoding="utf-8",
-            ) as f:
+            ) as file:
 
-                data = json.load(f)
+                data = json.load(file)
 
-        except Exception as e:
-
-            print(
-                f"LOCAL DB | "
-                f"ERROR reading variant "
-                f"{file_path}: {e}"
-            )
-
+        except Exception:
             return
 
         if not isinstance(
             data,
             dict,
-        ):
-            return
-
-        json_id = data.get("id")
-
-        if (
-            isinstance(json_id, str)
-            and json_id != item_id
         ):
             return
 
@@ -571,7 +572,7 @@ class LocalItemDatabase:
         )[ptn] = data
 
     # --------------------------------------------------------
-    # GET ITEMS
+    # GET
     # --------------------------------------------------------
 
     def get_items(
@@ -582,22 +583,17 @@ class LocalItemDatabase:
             self.items.values()
         )
 
-    # --------------------------------------------------------
-    # GET ITEM
-    # --------------------------------------------------------
-
-    def get_item(
+    def get_variants(
         self,
         item_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> List[int]:
 
-        return self.items.get(
-            item_id
+        return sorted(
+            self.variants.get(
+                item_id,
+                {},
+            ).keys()
         )
-
-    # --------------------------------------------------------
-    # HAS VARIANT
-    # --------------------------------------------------------
 
     def has_variant(
         self,
@@ -610,22 +606,6 @@ class LocalItemDatabase:
                 item_id,
                 {},
             )
-        )
-
-    # --------------------------------------------------------
-    # GET VARIANTS
-    # --------------------------------------------------------
-
-    def get_variants(
-        self,
-        item_id: str,
-    ) -> List[int]:
-
-        return sorted(
-            self.variants.get(
-                item_id,
-                {},
-            ).keys()
         )
 
 
@@ -649,7 +629,7 @@ class AuctionCollector:
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 REQUEST_TIMEOUT
-            ),
+            )
         )
 
     # ========================================================
@@ -661,9 +641,14 @@ class AuctionCollector:
     ) -> str:
 
         payload = {
-            "grant_type": "client_credentials",
-            "client_id": STALCRAFT_CLIENT_ID,
-            "client_secret": STALCRAFT_CLIENT_SECRET,
+            "grant_type":
+                "client_credentials",
+
+            "client_id":
+                STALCRAFT_CLIENT_ID,
+
+            "client_secret":
+                STALCRAFT_CLIENT_SECRET,
         }
 
         for attempt in range(
@@ -690,25 +675,13 @@ class AuctionCollector:
                     )
 
                     if attempt < REQUEST_RETRIES:
-
                         await asyncio.sleep(
                             attempt
                         )
 
                     continue
 
-                try:
-
-                    data = response.json()
-
-                except Exception as e:
-
-                    print(
-                        f"TOKEN JSON ERROR | "
-                        f"{e}"
-                    )
-
-                    continue
+                data = response.json()
 
                 token = data.get(
                     "access_token"
@@ -717,8 +690,7 @@ class AuctionCollector:
                 if not token:
 
                     raise RuntimeError(
-                        "OAuth response does "
-                        "not contain access_token"
+                        "access_token missing"
                     )
 
                 self.access_token = token
@@ -734,7 +706,7 @@ class AuctionCollector:
                 print(
                     f"TOKEN EXCEPTION | "
                     f"attempt={attempt} | "
-                    f"{type(e).__name__}: {e}"
+                    f"{e}"
                 )
 
                 if attempt < REQUEST_RETRIES:
@@ -749,27 +721,22 @@ class AuctionCollector:
         )
 
     # ========================================================
-    # REQUEST AUCTION
+    # AUCTION REQUEST
     # ========================================================
 
     async def request_auction(
         self,
         item_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[Any]:
 
         if not self.access_token:
 
             await self.get_access_token()
 
-        # ====================================================
-        # ПРАВИЛЬНЫЙ ENDPOINT
-        #
-        # /RU/auction/{item_id}/lots
-        # ====================================================
-
         url = (
             f"{AUCTION_BASE_URL}"
-            f"/RU/auction/{item_id}/lots"
+            f"/RU/auction/"
+            f"{item_id}/lots"
         )
 
         params = {
@@ -806,7 +773,7 @@ class AuctionCollector:
 
                     try:
 
-                        data = response.json()
+                        return response.json()
 
                     except Exception as e:
 
@@ -818,18 +785,8 @@ class AuctionCollector:
 
                         return None
 
-                    print(
-                        f"AUCTION OK | "
-                        f"ID={item_id}"
-                    )
-
-                    return data
-
                 # ------------------------------------------------
                 # 404
-                # ------------------------------------------------
-                # Не повторяем запрос.
-                # Переходим к следующему предмету.
                 # ------------------------------------------------
 
                 if response.status_code == 404:
@@ -862,8 +819,10 @@ class AuctionCollector:
 
                     await self.get_access_token()
 
-                    headers["Authorization"] = (
-                        f"Bearer "
+                    headers[
+                        "Authorization"
+                    ] = (
+                        "Bearer "
                         f"{self.access_token}"
                     )
 
@@ -881,21 +840,18 @@ class AuctionCollector:
                         )
                     )
 
-                    try:
+                    wait_time = to_int(
+                        retry_after
+                    )
 
-                        wait_time = float(
-                            retry_after
-                        )
-
-                    except (
-                        TypeError,
-                        ValueError,
+                    if (
+                        wait_time is None
+                        or wait_time <= 0
                     ):
-
-                        wait_time = 2.0
+                        wait_time = 2
 
                     print(
-                        f"AUCTION RATE LIMIT | "
+                        f"RATE LIMIT | "
                         f"ID={item_id} | "
                         f"sleep={wait_time}s"
                     )
@@ -907,7 +863,7 @@ class AuctionCollector:
                     continue
 
                 # ------------------------------------------------
-                # OTHER ERROR
+                # OTHER
                 # ------------------------------------------------
 
                 print(
@@ -928,8 +884,7 @@ class AuctionCollector:
 
                 print(
                     f"AUCTION TIMEOUT | "
-                    f"ID={item_id} | "
-                    f"attempt={attempt}"
+                    f"ID={item_id}"
                 )
 
                 if attempt < REQUEST_RETRIES:
@@ -943,8 +898,7 @@ class AuctionCollector:
                 print(
                     f"AUCTION EXCEPTION | "
                     f"ID={item_id} | "
-                    f"attempt={attempt} | "
-                    f"{type(e).__name__}: {e}"
+                    f"{e}"
                 )
 
                 if attempt < REQUEST_RETRIES:
@@ -956,6 +910,61 @@ class AuctionCollector:
         return None
 
     # ========================================================
+    # LOTS
+    # ========================================================
+
+    @staticmethod
+    def extract_lots(
+        data: Any,
+    ) -> List[Dict[str, Any]]:
+
+        if isinstance(
+            data,
+            list,
+        ):
+
+            return [
+                x
+                for x in data
+                if isinstance(
+                    x,
+                    dict,
+                )
+            ]
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            return []
+
+        for key in (
+            "lots",
+            "auctions",
+            "data",
+        ):
+
+            value = data.get(
+                key
+            )
+
+            if isinstance(
+                value,
+                list,
+            ):
+
+                return [
+                    x
+                    for x in value
+                    if isinstance(
+                        x,
+                        dict,
+                    )
+                ]
+
+        return []
+
+    # ========================================================
     # QLT
     # ========================================================
 
@@ -964,8 +973,11 @@ class AuctionCollector:
         lot: Dict[str, Any],
     ) -> int:
 
-        value = lot.get(
-            "qlt"
+        value = find_value_recursive(
+            lot,
+            (
+                "qlt",
+            ),
         )
 
         result = to_int(
@@ -986,8 +998,11 @@ class AuctionCollector:
         lot: Dict[str, Any],
     ) -> Optional[int]:
 
-        value = lot.get(
-            "ptn"
+        value = find_value_recursive(
+            lot,
+            (
+                "ptn",
+            ),
         )
 
         return to_int(
@@ -1003,9 +1018,16 @@ class AuctionCollector:
         lot: Dict[str, Any],
     ) -> Optional[int]:
         """
-        Получает цену выкупа.
+        ВАЖНО:
+        Не ищем произвольное число рекурсивно.
 
-        Поддерживает основные варианты структуры API.
+        Иначе можно случайно получить 0,
+        amount или другое число из структуры лота.
+
+        Приоритет:
+            buyoutPrice
+            buyout_price
+            buyout
         """
 
         # ----------------------------------------------------
@@ -1018,7 +1040,10 @@ class AuctionCollector:
                 "buyoutPrice"
             )
 
-            if isinstance(value, dict):
+            if isinstance(
+                value,
+                dict,
+            ):
 
                 for key in (
                     "amount",
@@ -1026,14 +1051,15 @@ class AuctionCollector:
                     "value",
                 ):
 
-                    if key in value:
+                    result = to_int(
+                        value.get(key)
+                    )
 
-                        result = to_int(
-                            value.get(key)
-                        )
-
-                        if result is not None:
-                            return result
+                    if (
+                        result is not None
+                        and result > 0
+                    ):
+                        return result
 
             else:
 
@@ -1041,7 +1067,10 @@ class AuctionCollector:
                     value
                 )
 
-                if result is not None:
+                if (
+                    result is not None
+                    and result > 0
+                ):
                     return result
 
         # ----------------------------------------------------
@@ -1056,7 +1085,10 @@ class AuctionCollector:
                 )
             )
 
-            if result is not None:
+            if (
+                result is not None
+                and result > 0
+            ):
                 return result
 
         # ----------------------------------------------------
@@ -1069,7 +1101,10 @@ class AuctionCollector:
                 "buyout"
             )
 
-            if isinstance(value, dict):
+            if isinstance(
+                value,
+                dict,
+            ):
 
                 for key in (
                     "amount",
@@ -1077,14 +1112,15 @@ class AuctionCollector:
                     "value",
                 ):
 
-                    if key in value:
+                    result = to_int(
+                        value.get(key)
+                    )
 
-                        result = to_int(
-                            value.get(key)
-                        )
-
-                        if result is not None:
-                            return result
+                    if (
+                        result is not None
+                        and result > 0
+                    ):
+                        return result
 
             else:
 
@@ -1092,23 +1128,11 @@ class AuctionCollector:
                     value
                 )
 
-                if result is not None:
+                if (
+                    result is not None
+                    and result > 0
+                ):
                     return result
-
-        # ----------------------------------------------------
-        # price
-        # ----------------------------------------------------
-
-        if "price" in lot:
-
-            result = to_int(
-                lot.get(
-                    "price"
-                )
-            )
-
-            if result is not None:
-                return result
 
         return None
 
@@ -1127,6 +1151,20 @@ class AuctionCollector:
         ):
             return None
 
+        price = (
+            self.extract_buyout_price(
+                lot
+            )
+        )
+
+        # Лоты без корректной цены
+        # не учитываем.
+        if (
+            price is None
+            or price <= 0
+        ):
+            return None
+
         qlt = self.get_qlt(
             lot
         )
@@ -1135,13 +1173,6 @@ class AuctionCollector:
             lot
         )
 
-        price = self.extract_buyout_price(
-            lot
-        )
-
-        if price is None:
-            return None
-
         return {
             "qlt": qlt,
             "ptn": ptn,
@@ -1149,84 +1180,7 @@ class AuctionCollector:
         }
 
     # ========================================================
-    # EXTRACT LOTS
-    # ========================================================
-
-    @staticmethod
-    def extract_lots(
-        data: Any,
-    ) -> List[Dict[str, Any]]:
-
-        if isinstance(
-            data,
-            list,
-        ):
-
-            return [
-                x
-                for x in data
-                if isinstance(x, dict)
-            ]
-
-        if not isinstance(
-            data,
-            dict,
-        ):
-
-            return []
-
-        # Обычный ответ
-        lots = data.get(
-            "lots"
-        )
-
-        if isinstance(
-            lots,
-            list,
-        ):
-
-            return [
-                x
-                for x in lots
-                if isinstance(x, dict)
-            ]
-
-        # Запасной вариант
-        auctions = data.get(
-            "auctions"
-        )
-
-        if isinstance(
-            auctions,
-            list,
-        ):
-
-            return [
-                x
-                for x in auctions
-                if isinstance(x, dict)
-            ]
-
-        # Ещё один возможный вариант
-        data_list = data.get(
-            "data"
-        )
-
-        if isinstance(
-            data_list,
-            list,
-        ):
-
-            return [
-                x
-                for x in data_list
-                if isinstance(x, dict)
-            ]
-
-        return []
-
-    # ========================================================
-    # COLLECT ONE ITEM
+    # COLLECT ITEM
     # ========================================================
 
     async def collect_item(
@@ -1234,10 +1188,14 @@ class AuctionCollector:
         item: Dict[str, Any],
     ) -> None:
 
-        item_id = item["id"]
+        item_id = item[
+            "id"
+        ]
 
         item_name = (
-            item.get("name")
+            item.get(
+                "name"
+            )
             or item_id
         )
 
@@ -1261,32 +1219,17 @@ class AuctionCollector:
 
             return
 
-        raw_lots = self.extract_lots(
-            data
+        raw_lots = (
+            self.extract_lots(
+                data
+            )
         )
 
-        if not raw_lots:
-
-            print(
-                f"COLLECT | "
-                f"ID={item_id} | "
-                f"lots=0"
-            )
-
-            # Сохраняем информацию о том,
-            # что предмет проверен, но лотов нет.
-            await self.save_history(
-                item=item,
-                rarity=(
-                    item.get("rarity")
-                    or "Обычный"
-                ),
-                ptn=None,
-                min_price=None,
-                total_lots=0,
-            )
-
-            return
+        print(
+            f"AUCTION LOTS | "
+            f"ID={item_id} | "
+            f"received={len(raw_lots)}"
+        )
 
         parsed_lots = []
 
@@ -1296,39 +1239,67 @@ class AuctionCollector:
                 lot
             )
 
-            if parsed is not None:
+            if parsed:
 
                 parsed_lots.append(
                     parsed
                 )
+
+        # ----------------------------------------------------
+        # DEBUG
+        # ----------------------------------------------------
+
+        ptn_values = [
+            lot["ptn"]
+            for lot in parsed_lots
+            if lot["ptn"] is not None
+        ]
+
+        qlt_values = [
+            lot["qlt"]
+            for lot in parsed_lots
+        ]
+
+        if ptn_values:
+
+            print(
+                f"AUCTION PARAMS | "
+                f"ID={item_id} | "
+                f"qlt={sorted(set(qlt_values))} | "
+                f"ptn={sorted(set(ptn_values))}"
+            )
+
+        else:
+
+            print(
+                f"AUCTION PARAMS | "
+                f"ID={item_id} | "
+                f"qlt={sorted(set(qlt_values))} | "
+                f"ptn=NONE"
+            )
 
         if not parsed_lots:
 
             print(
                 f"COLLECT | "
                 f"ID={item_id} | "
-                f"no valid prices"
+                f"no valid lots"
             )
 
             return
 
-        # ====================================================
-        # PTN DEBUG
-        # ====================================================
+        # ----------------------------------------------------
+        # PTN LOCAL MATCH
+        # ----------------------------------------------------
 
         self.debug_ptn_mapping(
             item_id,
-            [
-                lot["ptn"]
-                for lot in parsed_lots
-            ],
+            ptn_values,
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # GROUP
-        #
-        # qlt + ptn
-        # ====================================================
+        # ----------------------------------------------------
 
         groups: Dict[
             Tuple[
@@ -1352,25 +1323,24 @@ class AuctionCollector:
                 lot["price"]
             )
 
-        # ====================================================
-        # SAVE GROUPS
-        # ====================================================
+        # ----------------------------------------------------
+        # SAVE
+        # ----------------------------------------------------
 
         for (
             qlt,
             ptn,
         ), prices in groups.items():
 
-            rarity = QLT_TO_RARITY.get(
-                qlt
-            )
-
-            if rarity is None:
-
-                rarity = (
-                    item.get("rarity")
-                    or "Обычный"
+            rarity = (
+                QLT_TO_RARITY.get(
+                    qlt
                 )
+                or item.get(
+                    "rarity"
+                )
+                or "Обычный"
+            )
 
             min_price = min(
                 prices
@@ -1381,7 +1351,9 @@ class AuctionCollector:
                 rarity=rarity,
                 ptn=ptn,
                 min_price=min_price,
-                total_lots=len(prices),
+                total_lots=len(
+                    prices
+                ),
             )
 
         print(
@@ -1392,7 +1364,7 @@ class AuctionCollector:
         )
 
     # ========================================================
-    # SAVE HISTORY
+    # SAVE
     # ========================================================
 
     async def save_history(
@@ -1409,48 +1381,48 @@ class AuctionCollector:
         ]
 
         item_name = (
-            item.get("name")
+            item.get(
+                "name"
+            )
             or item_id
         )
 
         category = (
-            item.get("category")
+            item.get(
+                "category"
+            )
             or "artefact"
         )
 
-        # ----------------------------------------------------
-        # В текущей таблице price_history есть:
-        #
-        # variant
-        #
-        # но отдельного ptn нет.
-        #
-        # Поэтому пока записываем ptn туда.
-        # ----------------------------------------------------
-
-        if ptn is None:
-
-            variant = "unknown"
-
-        else:
-
-            variant = str(
-                ptn
-            )
-
-        min_price_int = (
-            to_int(min_price)
+        variant = (
+            str(ptn)
+            if ptn is not None
+            else "unknown"
         )
 
+        min_price = to_int(
+            min_price
+        )
+
+        now = datetime.now(
+            timezone.utc
+        ).isoformat()
+
         row = {
-            "item_id": item_id,
-            "item_name": item_name,
+            "item_id":
+                item_id,
+
+            "item_name":
+                item_name,
 
             "min_buyout_price":
-                min_price_int,
+                min_price,
 
             "total_lots":
                 int(total_lots),
+
+            "created_at":
+                now,
 
             "rarity":
                 rarity,
@@ -1462,14 +1434,16 @@ class AuctionCollector:
                 variant,
 
             "buyout_price":
-                min_price_int,
+                min_price,
         }
 
         try:
 
             (
                 supabase
-                .table("price_history")
+                .table(
+                    "price_history"
+                )
                 .insert(row)
                 .execute()
             )
@@ -1481,7 +1455,7 @@ class AuctionCollector:
                 f"{item_name} | "
                 f"rarity={rarity} | "
                 f"ptn={variant} | "
-                f"min={min_price_int} | "
+                f"min={min_price} | "
                 f"lots={total_lots}"
             )
 
@@ -1489,9 +1463,8 @@ class AuctionCollector:
 
             print(
                 f"SUPABASE ERROR | "
-                f"price_history | "
                 f"ID={item_id} | "
-                f"error={e}"
+                f"{e}"
             )
 
     # ========================================================
@@ -1501,10 +1474,11 @@ class AuctionCollector:
     def debug_ptn_mapping(
         self,
         item_id: str,
-        ptn_values: List[
-            Optional[int]
-        ],
+        ptn_values: List[int],
     ) -> None:
+
+        if not ptn_values:
+            return
 
         local_variants = (
             self.database.get_variants(
@@ -1515,20 +1489,11 @@ class AuctionCollector:
         if not local_variants:
             return
 
-        unique_ptn = sorted(
-            {
-                ptn
-                for ptn in ptn_values
-                if ptn is not None
-            }
-        )
-
-        if not unique_ptn:
-            return
-
         result = []
 
-        for ptn in unique_ptn:
+        for ptn in sorted(
+            set(ptn_values)
+        ):
 
             if self.database.has_variant(
                 item_id,
@@ -1563,7 +1528,9 @@ class AuctionCollector:
 
             result = (
                 supabase
-                .table("user_snipers")
+                .table(
+                    "user_snipers"
+                )
                 .select("*")
                 .execute()
             )
@@ -1593,7 +1560,9 @@ class AuctionCollector:
         self,
     ) -> None:
 
-        items = self.database.get_items()
+        items = (
+            self.database.get_items()
+        )
 
         total = len(
             items
@@ -1614,7 +1583,9 @@ class AuctionCollector:
             ]
 
             item_name = (
-                item.get("name")
+                item.get(
+                    "name"
+                )
                 or item_id
             )
 
@@ -1683,10 +1654,6 @@ async def main():
         f"{COLLECT_INTERVAL}s"
     )
 
-    # --------------------------------------------------------
-    # LOCAL DATABASE
-    # --------------------------------------------------------
-
     database = LocalItemDatabase(
         DATABASE_PATH
     )
@@ -1696,13 +1663,8 @@ async def main():
     if not database.items:
 
         raise RuntimeError(
-            "No items found in local "
-            "STALZONE database"
+            "No items found in local database"
         )
-
-    # --------------------------------------------------------
-    # COLLECTOR
-    # --------------------------------------------------------
 
     collector = AuctionCollector(
         database
@@ -1710,25 +1672,18 @@ async def main():
 
     try:
 
-        # ----------------------------------------------------
-        # TOKEN
-        # ----------------------------------------------------
-
         await collector.get_access_token()
-
-        # ----------------------------------------------------
-        # MAIN LOOP
-        # ----------------------------------------------------
 
         while True:
 
-            print()
             print(
                 "=" * 60
             )
+
             print(
                 "COLLECTION CYCLE START"
             )
+
             print(
                 "=" * 60
             )
@@ -1747,11 +1702,8 @@ async def main():
                     f"{e}"
                 )
 
-                # На следующем цикле
-                # получим новый токен.
                 collector.access_token = None
 
-            print()
             print(
                 "=" * 60
             )
