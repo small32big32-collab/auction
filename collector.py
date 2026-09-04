@@ -20,7 +20,6 @@ STALCRAFT_CLIENT_ID = os.getenv("STALCRAFT_CLIENT_ID")
 STALCRAFT_CLIENT_SECRET = os.getenv("STALCRAFT_CLIENT_SECRET")
 
 TOKEN_URL = "https://exbo.net/oauth/token"
-
 AUCTION_BASE_URL = "https://eapi.stalcraft.net"
 
 DATABASE_PATH = Path(
@@ -46,6 +45,9 @@ REQUEST_RETRIES = int(
     os.getenv("REQUEST_RETRIES", "3")
 )
 
+# Максимальное количество лотов за один запрос API
+AUCTION_PAGE_SIZE = 200
+
 
 # ============================================================
 # VALIDATION
@@ -58,14 +60,10 @@ if not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_KEY is not set")
 
 if not STALCRAFT_CLIENT_ID:
-    raise RuntimeError(
-        "STALCRAFT_CLIENT_ID is not set"
-    )
+    raise RuntimeError("STALCRAFT_CLIENT_ID is not set")
 
 if not STALCRAFT_CLIENT_SECRET:
-    raise RuntimeError(
-        "STALCRAFT_CLIENT_SECRET is not set"
-    )
+    raise RuntimeError("STALCRAFT_CLIENT_SECRET is not set")
 
 
 # ============================================================
@@ -126,6 +124,12 @@ COLOR_TO_RARITY = {
 # ============================================================
 
 def to_int(value: Any) -> Optional[int]:
+    """
+    Безопасное преобразование значения в int.
+
+    Нужно, в частности, потому что Supabase BIGINT
+    не принимает значения вида 234999.0.
+    """
 
     if value is None:
         return None
@@ -135,7 +139,6 @@ def to_int(value: Any) -> Optional[int]:
 
     try:
         return int(round(float(value)))
-
     except (TypeError, ValueError):
         return None
 
@@ -148,40 +151,46 @@ def normalize_string(
         return None
 
     if isinstance(value, str):
-
         value = value.strip()
 
-        return value if value else None
+        if value:
+            return value
+
+        return None
 
     if isinstance(value, dict):
 
+        # Сначала пробуем обычные варианты
+        for key in (
+            "ru",
+            "name",
+            "title",
+        ):
+            result = normalize_string(
+                value.get(key)
+            )
+
+            if result:
+                return result
+
+        # Затем lines
         lines = value.get("lines")
 
         if isinstance(lines, dict):
 
-            ru = lines.get("ru")
+            result = normalize_string(
+                lines.get("ru")
+            )
 
-            if isinstance(ru, str):
-                if ru.strip():
-                    return ru.strip()
+            if result:
+                return result
 
-            en = lines.get("en")
+            result = normalize_string(
+                lines.get("en")
+            )
 
-            if isinstance(en, str):
-                if en.strip():
-                    return en.strip()
-
-        ru = value.get("ru")
-
-        if isinstance(ru, str):
-            if ru.strip():
-                return ru.strip()
-
-        name = value.get("name")
-
-        if isinstance(name, str):
-            if name.strip():
-                return name.strip()
+            if result:
+                return result
 
     return None
 
@@ -208,22 +217,26 @@ def normalize_category(
 
     if isinstance(value, str):
 
-        return value.strip() or "artefact"
+        value = value.strip()
+
+        if value:
+            return value
 
     if isinstance(value, list):
 
-        values = []
+        parts = []
 
         for item in value:
 
             if isinstance(item, str):
-                if item.strip():
-                    values.append(
-                        item.strip()
-                    )
 
-        if values:
-            return "/".join(values)
+                item = item.strip()
+
+                if item:
+                    parts.append(item)
+
+        if parts:
+            return "/".join(parts)
 
     if isinstance(value, dict):
 
@@ -243,6 +256,10 @@ def normalize_category(
     return "artefact"
 
 
+# ============================================================
+# RARITY FROM LOCAL DATABASE
+# ============================================================
+
 def detect_json_rarity(
     obj: Any,
 ) -> Optional[str]:
@@ -250,6 +267,12 @@ def detect_json_rarity(
     if isinstance(obj, dict):
 
         key = obj.get("key")
+
+        # ВАЖНО:
+        # key иногда является dict.
+        # Поэтому обязательно проверяем isinstance(str),
+        # иначе получим:
+        # TypeError: unhashable type: 'dict'
 
         if isinstance(key, str):
 
@@ -299,7 +322,7 @@ def detect_json_rarity(
 
 
 # ============================================================
-# RECURSIVE VALUE SEARCH
+# RECURSIVE SEARCH
 # ============================================================
 
 def find_value_recursive(
@@ -307,18 +330,21 @@ def find_value_recursive(
     keys: Tuple[str, ...],
 ) -> Any:
     """
-    Рекурсивно ищет ключи в JSON.
+    Рекурсивный поиск значения в JSON.
 
-    Например:
-        additional -> ptn
-        additional -> qlt
+    Используется для поиска:
 
-    Это нужно потому, что auction lot может иметь
-    характеристики не на верхнем уровне.
+        qlt
+        ptn
+
+    в том числе внутри:
+
+        additional
     """
 
     if isinstance(obj, dict):
 
+        # Сначала проверяем текущий уровень
         for key in keys:
 
             if key in obj:
@@ -328,6 +354,7 @@ def find_value_recursive(
                 if value is not None:
                     return value
 
+        # Затем рекурсивно ищем внутри
         for value in obj.values():
 
             result = find_value_recursive(
@@ -354,7 +381,105 @@ def find_value_recursive(
 
 
 # ============================================================
-# LOCAL DATABASE
+# AUCTION JSON PARSING
+# ============================================================
+
+def extract_lots(
+    data: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Извлекает список lots из ответа API.
+    """
+
+    if isinstance(data, dict):
+
+        lots = data.get("lots")
+
+        if isinstance(lots, list):
+
+            return [
+                lot
+                for lot in lots
+                if isinstance(lot, dict)
+            ]
+
+    elif isinstance(data, list):
+
+        return [
+            lot
+            for lot in data
+            if isinstance(lot, dict)
+        ]
+
+    return []
+
+
+def extract_buyout_price(
+    lot: Dict[str, Any],
+) -> Optional[int]:
+    """
+    Получает buyoutPrice.
+
+    Поддерживает разные варианты названия поля.
+    """
+
+    for key in (
+        "buyoutPrice",
+        "buyout_price",
+        "buyout",
+    ):
+
+        value = to_int(
+            lot.get(key)
+        )
+
+        if value is not None and value > 0:
+            return value
+
+    return None
+
+
+def get_qlt(
+    lot: Dict[str, Any],
+) -> int:
+    """
+    Получает qlt.
+
+    Если qlt отсутствует, считаем предмет обычным.
+    """
+
+    value = find_value_recursive(
+        lot,
+        ("qlt",),
+    )
+
+    result = to_int(value)
+
+    if result is None:
+        return -1
+
+    return result
+
+
+def get_ptn(
+    lot: Dict[str, Any],
+) -> Optional[int]:
+    """
+    Получает ptn.
+
+    Если ptn отсутствует, возвращается None.
+    """
+
+    value = find_value_recursive(
+        lot,
+        ("ptn",),
+    )
+
+    return to_int(value)
+
+
+# ============================================================
+# LOCAL ITEM DATABASE
 # ============================================================
 
 class LocalItemDatabase:
@@ -377,7 +502,7 @@ class LocalItemDatabase:
         ] = {}
 
     # --------------------------------------------------------
-    # LOAD
+    # LOAD DATABASE
     # --------------------------------------------------------
 
     def load(self) -> None:
@@ -405,33 +530,19 @@ class LocalItemDatabase:
             f"{len(files)}"
         )
 
-        main_files = []
-        variant_files = []
-
         for file_path in files:
 
             if "_variants" in file_path.parts:
-                variant_files.append(
+
+                self.load_variant(
                     file_path
                 )
+
             else:
-                main_files.append(
+
+                self.load_main_item(
                     file_path
                 )
-
-        # Сначала основные предметы
-        for file_path in main_files:
-
-            self.load_main_item(
-                file_path
-            )
-
-        # Затем варианты
-        for file_path in variant_files:
-
-            self.load_variant(
-                file_path
-            )
 
         print(
             f"LOCAL DB | unique items: "
@@ -461,12 +572,11 @@ class LocalItemDatabase:
 
                 data = json.load(file)
 
-        except Exception as e:
+        except Exception as exc:
 
             print(
-                f"LOCAL DB | "
-                f"ERROR reading "
-                f"{file_path}: {e}"
+                f"LOCAL DB | ERROR reading "
+                f"{file_path}: {exc}"
             )
 
             return
@@ -509,12 +619,8 @@ class LocalItemDatabase:
             "name": name or item_id,
             "rarity": rarity,
             "category": category,
-            "color": data.get(
-                "color"
-            ),
-            "path": str(
-                file_path
-            ),
+            "color": data.get("color"),
+            "path": str(file_path),
         }
 
     # --------------------------------------------------------
@@ -538,7 +644,10 @@ class LocalItemDatabase:
                 index + 1
             ]
 
-        except Exception:
+        except (
+            ValueError,
+            IndexError,
+        ):
             return
 
         if not file_path.stem.isdigit():
@@ -558,6 +667,7 @@ class LocalItemDatabase:
                 data = json.load(file)
 
         except Exception:
+
             return
 
         if not isinstance(
@@ -572,7 +682,7 @@ class LocalItemDatabase:
         )[ptn] = data
 
     # --------------------------------------------------------
-    # GET
+    # GET ITEMS
     # --------------------------------------------------------
 
     def get_items(
@@ -582,6 +692,10 @@ class LocalItemDatabase:
         return list(
             self.items.values()
         )
+
+    # --------------------------------------------------------
+    # GET VARIANTS
+    # --------------------------------------------------------
 
     def get_variants(
         self,
@@ -593,19 +707,6 @@ class LocalItemDatabase:
                 item_id,
                 {},
             ).keys()
-        )
-
-    def has_variant(
-        self,
-        item_id: str,
-        ptn: int,
-    ) -> bool:
-
-        return ptn in (
-            self.variants.get(
-                item_id,
-                {},
-            )
         )
 
 
@@ -665,55 +766,51 @@ class AuctionCollector:
                     )
                 )
 
-                if response.status_code != 200:
+                if response.status_code == 200:
+
+                    data = response.json()
+
+                    token = data.get(
+                        "access_token"
+                    )
+
+                    if token:
+
+                        self.access_token = token
+
+                        print(
+                            "TOKEN OK"
+                        )
+
+                        return token
+
+                    print(
+                        "TOKEN ERROR | "
+                        "access_token missing"
+                    )
+
+                else:
 
                     print(
                         f"TOKEN ERROR | "
                         f"HTTP "
                         f"{response.status_code} | "
-                        f"{response.text[:500]}"
+                        f"{response.text[:300]}"
                     )
 
-                    if attempt < REQUEST_RETRIES:
-                        await asyncio.sleep(
-                            attempt
-                        )
-
-                    continue
-
-                data = response.json()
-
-                token = data.get(
-                    "access_token"
-                )
-
-                if not token:
-
-                    raise RuntimeError(
-                        "access_token missing"
-                    )
-
-                self.access_token = token
-
-                print(
-                    "TOKEN OK"
-                )
-
-                return token
-
-            except Exception as e:
+            except Exception as exc:
 
                 print(
                     f"TOKEN EXCEPTION | "
                     f"attempt={attempt} | "
-                    f"{e}"
+                    f"{exc}"
                 )
 
-                if attempt < REQUEST_RETRIES:
+            if attempt < REQUEST_RETRIES:
 
-                    await asyncio.sleep(
-                        attempt
-                    )
+                await asyncio.sleep(
+                    attempt
+                )
 
         raise RuntimeError(
             "Unable to obtain "
@@ -721,13 +818,27 @@ class AuctionCollector:
         )
 
     # ========================================================
-    # AUCTION REQUEST
+    # ONE AUCTION PAGE
     # ========================================================
 
-    async def request_auction(
+    async def request_auction_page(
         self,
         item_id: str,
-    ) -> Optional[Any]:
+        offset: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Получает одну страницу аукциона.
+
+        Ключевой момент:
+
+            additional=true
+
+        Именно он нужен для получения
+        дополнительных параметров:
+
+            qlt
+            ptn
+        """
 
         if not self.access_token:
 
@@ -736,16 +847,30 @@ class AuctionCollector:
         url = (
             f"{AUCTION_BASE_URL}"
             f"/RU/auction/"
-            f"{item_id}/lots"
+            f"{item_id}"
+            f"/lots"
         )
 
         params = {
-            "limit": 200,
+            "additional": "true",
+
+            "limit":
+                AUCTION_PAGE_SIZE,
+
+            "offset":
+                offset,
+
+            "sort":
+                "time_created",
+
+            "order":
+                "desc",
         }
 
         headers = {
             "Authorization":
                 f"Bearer {self.access_token}",
+
             "Accept":
                 "application/json",
         }
@@ -775,58 +900,35 @@ class AuctionCollector:
 
                         return response.json()
 
-                    except Exception as e:
+                    except Exception as exc:
 
                         print(
                             f"AUCTION JSON ERROR | "
                             f"ID={item_id} | "
-                            f"{e}"
+                            f"{exc}"
                         )
 
                         return None
 
                 # ------------------------------------------------
-                # 404
+                # UNAUTHORIZED
                 # ------------------------------------------------
 
-                if response.status_code == 404:
+                if response.status_code == 401:
 
                     print(
-                        f"AUCTION 404 | "
+                        f"AUCTION 401 | "
                         f"ID={item_id} | "
-                        f"skip"
-                    )
-
-                    return None
-
-                # ------------------------------------------------
-                # AUTH
-                # ------------------------------------------------
-
-                if response.status_code in (
-                    401,
-                    403,
-                ):
-
-                    print(
-                        f"AUCTION AUTH ERROR | "
-                        f"ID={item_id} | "
-                        f"HTTP "
-                        f"{response.status_code}"
+                        f"refreshing token"
                     )
 
                     self.access_token = None
 
-                    await self.get_access_token()
+                    if attempt < REQUEST_RETRIES:
 
-                    headers[
-                        "Authorization"
-                    ] = (
-                        "Bearer "
-                        f"{self.access_token}"
-                    )
+                        await self.get_access_token()
 
-                    continue
+                        continue
 
                 # ------------------------------------------------
                 # RATE LIMIT
@@ -834,503 +936,348 @@ class AuctionCollector:
 
                 if response.status_code == 429:
 
-                    retry_after = (
+                    retry_after = to_int(
                         response.headers.get(
                             "Retry-After"
                         )
                     )
 
-                    wait_time = to_int(
-                        retry_after
-                    )
-
-                    if (
-                        wait_time is None
-                        or wait_time <= 0
-                    ):
-                        wait_time = 2
+                    if retry_after is None:
+                        retry_after = max(
+                            1,
+                            attempt * 2,
+                        )
 
                     print(
-                        f"RATE LIMIT | "
+                        f"AUCTION RATE LIMIT | "
                         f"ID={item_id} | "
-                        f"sleep={wait_time}s"
+                        f"wait={retry_after}s"
                     )
 
                     await asyncio.sleep(
-                        wait_time
+                        retry_after
                     )
 
                     continue
 
                 # ------------------------------------------------
-                # OTHER
+                # OTHER ERROR
                 # ------------------------------------------------
 
                 print(
                     f"AUCTION ERROR | "
                     f"ID={item_id} | "
+                    f"offset={offset} | "
                     f"HTTP "
                     f"{response.status_code} | "
-                    f"{response.text[:500]}"
+                    f"{response.text[:300]}"
                 )
 
-                if attempt < REQUEST_RETRIES:
-
-                    await asyncio.sleep(
-                        attempt
-                    )
-
-            except httpx.TimeoutException:
-
-                print(
-                    f"AUCTION TIMEOUT | "
-                    f"ID={item_id}"
-                )
-
-                if attempt < REQUEST_RETRIES:
-
-                    await asyncio.sleep(
-                        attempt
-                    )
-
-            except Exception as e:
+            except Exception as exc:
 
                 print(
                     f"AUCTION EXCEPTION | "
                     f"ID={item_id} | "
-                    f"{e}"
+                    f"offset={offset} | "
+                    f"attempt={attempt} | "
+                    f"{exc}"
                 )
 
-                if attempt < REQUEST_RETRIES:
+            if attempt < REQUEST_RETRIES:
 
-                    await asyncio.sleep(
-                        attempt
-                    )
+                await asyncio.sleep(
+                    attempt
+                )
 
         return None
 
     # ========================================================
-    # LOTS
+    # FULL AUCTION
     # ========================================================
 
-    @staticmethod
-    def extract_lots(
-        data: Any,
+    async def request_auction(
+        self,
+        item_id: str,
     ) -> List[Dict[str, Any]]:
-
-        if isinstance(
-            data,
-            list,
-        ):
-
-            return [
-                x
-                for x in data
-                if isinstance(
-                    x,
-                    dict,
-                )
-            ]
-
-        if not isinstance(
-            data,
-            dict,
-        ):
-            return []
-
-        for key in (
-            "lots",
-            "auctions",
-            "data",
-        ):
-
-            value = data.get(
-                key
-            )
-
-            if isinstance(
-                value,
-                list,
-            ):
-
-                return [
-                    x
-                    for x in value
-                    if isinstance(
-                        x,
-                        dict,
-                    )
-                ]
-
-        return []
-
-    # ========================================================
-    # QLT
-    # ========================================================
-
-    @staticmethod
-    def get_qlt(
-        lot: Dict[str, Any],
-    ) -> int:
-
-        value = find_value_recursive(
-            lot,
-            (
-                "qlt",
-            ),
-        )
-
-        result = to_int(
-            value
-        )
-
-        if result is None:
-            return -1
-
-        return result
-
-    # ========================================================
-    # PTN
-    # ========================================================
-
-    @staticmethod
-    def get_ptn(
-        lot: Dict[str, Any],
-    ) -> Optional[int]:
-
-        value = find_value_recursive(
-            lot,
-            (
-                "ptn",
-            ),
-        )
-
-        return to_int(
-            value
-        )
-
-    # ========================================================
-    # BUYOUT PRICE
-    # ========================================================
-
-    @staticmethod
-    def extract_buyout_price(
-        lot: Dict[str, Any],
-    ) -> Optional[int]:
         """
-        ВАЖНО:
-        Не ищем произвольное число рекурсивно.
+        Получает ВСЕ лоты предмета.
 
-        Иначе можно случайно получить 0,
-        amount или другое число из структуры лота.
+        API отдаёт максимум 200 лотов
+        за страницу.
 
-        Приоритет:
-            buyoutPrice
-            buyout_price
-            buyout
+        Поэтому:
+
+            offset=0
+            offset=200
+            offset=400
+            ...
+
+        пока лоты не закончатся.
         """
 
-        # ----------------------------------------------------
-        # buyoutPrice
-        # ----------------------------------------------------
+        all_lots: List[
+            Dict[str, Any]
+        ] = []
 
-        if "buyoutPrice" in lot:
+        offset = 0
 
-            value = lot.get(
-                "buyoutPrice"
-            )
+        total: Optional[int] = None
 
-            if isinstance(
-                value,
-                dict,
-            ):
+        while True:
 
-                for key in (
-                    "amount",
-                    "price",
-                    "value",
-                ):
-
-                    result = to_int(
-                        value.get(key)
-                    )
-
-                    if (
-                        result is not None
-                        and result > 0
-                    ):
-                        return result
-
-            else:
-
-                result = to_int(
-                    value
-                )
-
-                if (
-                    result is not None
-                    and result > 0
-                ):
-                    return result
-
-        # ----------------------------------------------------
-        # buyout_price
-        # ----------------------------------------------------
-
-        if "buyout_price" in lot:
-
-            result = to_int(
-                lot.get(
-                    "buyout_price"
+            data = (
+                await self.request_auction_page(
+                    item_id,
+                    offset,
                 )
             )
 
-            if (
-                result is not None
-                and result > 0
-            ):
-                return result
+            if data is None:
 
-        # ----------------------------------------------------
-        # buyout
-        # ----------------------------------------------------
+                break
 
-        if "buyout" in lot:
-
-            value = lot.get(
-                "buyout"
-            )
-
-            if isinstance(
-                value,
-                dict,
-            ):
-
-                for key in (
-                    "amount",
-                    "price",
-                    "value",
-                ):
-
-                    result = to_int(
-                        value.get(key)
-                    )
-
-                    if (
-                        result is not None
-                        and result > 0
-                    ):
-                        return result
-
-            else:
-
-                result = to_int(
-                    value
-                )
-
-                if (
-                    result is not None
-                    and result > 0
-                ):
-                    return result
-
-        return None
-
-    # ========================================================
-    # PARSE LOT
-    # ========================================================
-
-    def parse_lot(
-        self,
-        lot: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-
-        if not isinstance(
-            lot,
-            dict,
-        ):
-            return None
-
-        price = (
-            self.extract_buyout_price(
-                lot
-            )
-        )
-
-        # Лоты без корректной цены
-        # не учитываем.
-        if (
-            price is None
-            or price <= 0
-        ):
-            return None
-
-        qlt = self.get_qlt(
-            lot
-        )
-
-        ptn = self.get_ptn(
-            lot
-        )
-
-        return {
-            "qlt": qlt,
-            "ptn": ptn,
-            "price": price,
-        }
-
-    # ========================================================
-    # COLLECT ITEM
-    # ========================================================
-
-    async def collect_item(
-        self,
-        item: Dict[str, Any],
-    ) -> None:
-
-        item_id = item[
-            "id"
-        ]
-
-        item_name = (
-            item.get(
-                "name"
-            )
-            or item_id
-        )
-
-        print(
-            f"COLLECT | "
-            f"ID={item_id} | "
-            f"{item_name}"
-        )
-
-        data = await self.request_auction(
-            item_id
-        )
-
-        if data is None:
-
-            print(
-                f"COLLECT | "
-                f"ID={item_id} | "
-                f"no data"
-            )
-
-            return
-
-        raw_lots = (
-            self.extract_lots(
+            lots = extract_lots(
                 data
             )
-        )
 
-        print(
-            f"AUCTION LOTS | "
-            f"ID={item_id} | "
-            f"received={len(raw_lots)}"
-        )
+            # Получаем total, если API его отдаёт
+            if isinstance(
+                data,
+                dict,
+            ):
 
-        parsed_lots = []
-
-        for lot in raw_lots:
-
-            parsed = self.parse_lot(
-                lot
-            )
-
-            if parsed:
-
-                parsed_lots.append(
-                    parsed
+                page_total = to_int(
+                    data.get(
+                        "total"
+                    )
                 )
 
-        # ----------------------------------------------------
-        # DEBUG
-        # ----------------------------------------------------
+                if page_total is not None:
 
-        ptn_values = [
-            lot["ptn"]
-            for lot in parsed_lots
-            if lot["ptn"] is not None
-        ]
-
-        qlt_values = [
-            lot["qlt"]
-            for lot in parsed_lots
-        ]
-
-        if ptn_values:
+                    total = page_total
 
             print(
-                f"AUCTION PARAMS | "
+                f"AUCTION LOTS | "
                 f"ID={item_id} | "
-                f"qlt={sorted(set(qlt_values))} | "
-                f"ptn={sorted(set(ptn_values))}"
+                f"offset={offset} | "
+                f"received={len(lots)}"
             )
 
-        else:
+            # Лотов больше нет
+            if not lots:
+                break
+
+            all_lots.extend(
+                lots
+            )
+
+            # Если страница неполная —
+            # это последняя страница
+            if len(lots) < AUCTION_PAGE_SIZE:
+
+                break
+
+            # Если знаем total и уже всё получили
+            if (
+                total is not None
+                and len(all_lots) >= total
+            ):
+
+                break
+
+            offset += AUCTION_PAGE_SIZE
+
+            await asyncio.sleep(
+                REQUEST_DELAY
+            )
+
+        return all_lots
+
+    # ========================================================
+    # SNIPERS
+    # ========================================================
+
+    async def load_snipers(
+        self,
+    ) -> List[Dict[str, Any]]:
+
+        try:
+
+            response = (
+                supabase
+                .table("user_snipers")
+                .select("*")
+                .execute()
+            )
+
+            return response.data or []
+
+        except Exception as exc:
 
             print(
-                f"AUCTION PARAMS | "
-                f"ID={item_id} | "
-                f"qlt={sorted(set(qlt_values))} | "
-                f"ptn=NONE"
+                f"SNIPERS ERROR | {exc}"
             )
 
-        if not parsed_lots:
+            return []
 
-            print(
-                f"COLLECT | "
-                f"ID={item_id} | "
-                f"no valid lots"
-            )
+    # ========================================================
+    # SAVE HISTORY
+    # ========================================================
+
+    async def save_history(
+        self,
+        item: Dict[str, Any],
+        lots: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Записывает данные в:
+
+            price_history
+
+        Используются существующие поля:
+
+            item_id
+            item_name
+            min_buyout_price
+            total_lots
+            created_at
+            rarity
+            category
+            variant
+            buyout_price
+        """
+
+        if not lots:
 
             return
 
-        # ----------------------------------------------------
-        # PTN LOCAL MATCH
-        # ----------------------------------------------------
+        valid_lots: List[
+            Tuple[
+                Dict[str, Any],
+                int,
+                int,
+                Optional[int],
+            ]
+        ] = []
 
-        self.debug_ptn_mapping(
-            item_id,
-            ptn_values,
-        )
+        for lot in lots:
+
+            price = extract_buyout_price(
+                lot
+            )
+
+            if price is None:
+                continue
+
+            qlt = get_qlt(
+                lot
+            )
+
+            ptn = get_ptn(
+                lot
+            )
+
+            valid_lots.append(
+                (
+                    lot,
+                    price,
+                    qlt,
+                    ptn,
+                )
+            )
+
+        if not valid_lots:
+
+            print(
+                f"SUPABASE SKIP | "
+                f"ID={item['id']} | "
+                f"no valid buyout prices"
+            )
+
+            return
 
         # ----------------------------------------------------
         # GROUP
         # ----------------------------------------------------
 
-        groups: Dict[
-            Tuple[
-                int,
-                Optional[int],
-            ],
+        grouped: Dict[
+            Tuple[int, Optional[int]],
             List[int],
         ] = {}
 
-        for lot in parsed_lots:
+        for (
+            _lot,
+            price,
+            qlt,
+            ptn,
+        ) in valid_lots:
 
             key = (
-                lot["qlt"],
-                lot["ptn"],
+                qlt,
+                ptn,
             )
 
-            groups.setdefault(
+            grouped.setdefault(
                 key,
                 [],
             ).append(
-                lot["price"]
+                price
             )
 
         # ----------------------------------------------------
-        # SAVE
+        # LOG PARAMETERS
         # ----------------------------------------------------
 
+        qlts = sorted(
+            {
+                qlt
+                for (
+                    _lot,
+                    _price,
+                    qlt,
+                    _ptn,
+                ) in valid_lots
+            }
+        )
+
+        ptns = sorted(
+            {
+                ptn
+                for (
+                    _lot,
+                    _price,
+                    _qlt,
+                    ptn,
+                ) in valid_lots
+                if ptn is not None
+            }
+        )
+
+        print(
+            f"AUCTION PARAMS | "
+            f"ID={item['id']} | "
+            f"qlt={qlts} | "
+            f"ptn="
+            f"{ptns if ptns else 'NONE'}"
+        )
+
+        # ----------------------------------------------------
+        # BUILD SUPABASE ROWS
+        # ----------------------------------------------------
+
+        rows = []
+
         for (
-            qlt,
-            ptn,
-        ), prices in groups.items():
+            (
+                qlt,
+                ptn,
+            ),
+            prices,
+        ) in grouped.items():
+
+            min_price = min(
+                prices
+            )
 
             rarity = (
                 QLT_TO_RARITY.get(
@@ -1342,215 +1289,121 @@ class AuctionCollector:
                 or "Обычный"
             )
 
-            min_price = min(
-                prices
+            row = {
+                "item_id":
+                    item["id"],
+
+                "item_name":
+                    item["name"],
+
+                "min_buyout_price":
+                    int(min_price),
+
+                "total_lots":
+                    int(len(prices)),
+
+                "created_at":
+                    datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+
+                "rarity":
+                    rarity,
+
+                "category":
+                    item.get(
+                        "category",
+                        "artefact",
+                    ),
+
+                "variant":
+                    (
+                        str(ptn)
+                        if ptn is not None
+                        else "unknown"
+                    ),
+
+                "buyout_price":
+                    int(min_price),
+            }
+
+            rows.append(
+                row
             )
 
-            await self.save_history(
-                item=item,
-                rarity=rarity,
-                ptn=ptn,
-                min_price=min_price,
-                total_lots=len(
-                    prices
-                ),
-            )
-
-        print(
-            f"COLLECT OK | "
-            f"ID={item_id} | "
-            f"lots={len(parsed_lots)} | "
-            f"groups={len(groups)}"
-        )
-
-    # ========================================================
-    # SAVE
-    # ========================================================
-
-    async def save_history(
-        self,
-        item: Dict[str, Any],
-        rarity: str,
-        ptn: Optional[int],
-        min_price: Optional[int],
-        total_lots: int,
-    ) -> None:
-
-        item_id = item[
-            "id"
-        ]
-
-        item_name = (
-            item.get(
-                "name"
-            )
-            or item_id
-        )
-
-        category = (
-            item.get(
-                "category"
-            )
-            or "artefact"
-        )
-
-        variant = (
-            str(ptn)
-            if ptn is not None
-            else "unknown"
-        )
-
-        min_price = to_int(
-            min_price
-        )
-
-        now = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        row = {
-            "item_id":
-                item_id,
-
-            "item_name":
-                item_name,
-
-            "min_buyout_price":
-                min_price,
-
-            "total_lots":
-                int(total_lots),
-
-            "created_at":
-                now,
-
-            "rarity":
-                rarity,
-
-            "category":
-                category,
-
-            "variant":
-                variant,
-
-            "buyout_price":
-                min_price,
-        }
+        # ----------------------------------------------------
+        # SAVE
+        # ----------------------------------------------------
 
         try:
 
-            (
+            response = (
                 supabase
-                .table(
-                    "price_history"
-                )
-                .insert(row)
+                .table("price_history")
+                .insert(rows)
                 .execute()
+            )
+
+            saved_count = len(
+                response.data or rows
             )
 
             print(
                 f"SUPABASE OK | "
                 f"price_history | "
-                f"ID={item_id} | "
-                f"{item_name} | "
-                f"rarity={rarity} | "
-                f"ptn={variant} | "
-                f"min={min_price} | "
-                f"lots={total_lots}"
+                f"ID={item['id']} | "
+                f"rows={saved_count}"
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             print(
                 f"SUPABASE ERROR | "
-                f"ID={item_id} | "
-                f"{e}"
+                f"price_history | "
+                f"ID={item['id']} | "
+                f"{exc}"
             )
 
     # ========================================================
-    # PTN DEBUG
+    # COLLECT ONE ITEM
     # ========================================================
 
-    def debug_ptn_mapping(
+    async def collect_item(
         self,
-        item_id: str,
-        ptn_values: List[int],
+        item: Dict[str, Any],
     ) -> None:
 
-        if not ptn_values:
-            return
-
-        local_variants = (
-            self.database.get_variants(
-                item_id
-            )
-        )
-
-        if not local_variants:
-            return
-
-        result = []
-
-        for ptn in sorted(
-            set(ptn_values)
-        ):
-
-            if self.database.has_variant(
-                item_id,
-                ptn,
-            ):
-
-                result.append(
-                    f"{ptn}=MATCH"
-                )
-
-            else:
-
-                result.append(
-                    f"{ptn}=NO_LOCAL_VARIANT"
-                )
+        item_id = item["id"]
 
         print(
-            f"PTN MAP | "
+            f"COLLECT | "
             f"ID={item_id} | "
-            f"{' | '.join(result)}"
+            f"{item['name']}"
         )
 
-    # ========================================================
-    # SNIPERS
-    # ========================================================
+        lots = await self.request_auction(
+            item_id
+        )
 
-    async def monitor_snipers(
-        self,
-    ) -> None:
-
-        try:
-
-            result = (
-                supabase
-                .table(
-                    "user_snipers"
-                )
-                .select("*")
-                .execute()
-            )
-
-            snipers = (
-                result.data
-                or []
-            )
+        if not lots:
 
             print(
-                f"SNIPERS | "
-                f"loaded={len(snipers)}"
+                f"COLLECT EMPTY | "
+                f"ID={item_id}"
             )
 
-        except Exception as e:
+            return
 
-            print(
-                f"SNIPERS ERROR | "
-                f"{e}"
-            )
+        await self.save_history(
+            item,
+            lots,
+        )
+
+        print(
+            f"COLLECT OK | "
+            f"ID={item_id} | "
+            f"lots={len(lots)}"
+        )
 
     # ========================================================
     # COLLECT ALL
@@ -1560,40 +1413,27 @@ class AuctionCollector:
         self,
     ) -> None:
 
-        items = (
-            self.database.get_items()
-        )
+        # ВАЖНО:
+        # Список берётся из LOCAL DATABASE,
+        # а НЕ из Supabase.items.
 
-        total = len(
-            items
-        )
+        items = self.database.get_items()
 
         print(
             f"COLLECT ALL | "
-            f"items={total}"
+            f"items={len(items)}"
         )
 
         for index, item in enumerate(
             items,
-            start=1,
+            1,
         ):
-
-            item_id = item[
-                "id"
-            ]
-
-            item_name = (
-                item.get(
-                    "name"
-                )
-                or item_id
-            )
 
             print(
                 f"COLLECT ALL | "
-                f"[{index}/{total}] | "
-                f"{item_id} | "
-                f"{item_name}"
+                f"[{index}/{len(items)}] | "
+                f"{item['id']} | "
+                f"{item['name']}"
             )
 
             try:
@@ -1602,17 +1442,67 @@ class AuctionCollector:
                     item
                 )
 
-            except Exception as e:
+            except Exception as exc:
 
                 print(
                     f"COLLECT ERROR | "
-                    f"ID={item_id} | "
-                    f"{type(e).__name__}: "
-                    f"{e}"
+                    f"ID={item['id']} | "
+                    f"{exc}"
                 )
 
             await asyncio.sleep(
                 REQUEST_DELAY
+            )
+
+    # ========================================================
+    # RUN
+    # ========================================================
+
+    async def run(
+        self,
+    ) -> None:
+
+        # Загружаем локальную официальную БД
+        self.database.load()
+
+        # Получаем токен
+        await self.get_access_token()
+
+        print(
+            "=" * 60
+        )
+
+        while True:
+
+            print(
+                "COLLECTION CYCLE START"
+            )
+
+            # Настройки снайперов
+            # остаются в Supabase.
+            snipers = (
+                await self.load_snipers()
+            )
+
+            print(
+                f"SNIPERS | "
+                f"loaded={len(snipers)}"
+            )
+
+            # Основной сбор
+            await self.collect_all()
+
+            print(
+                "COLLECTION CYCLE END"
+            )
+
+            print(
+                f"NEXT CYCLE | "
+                f"in {COLLECT_INTERVAL}s"
+            )
+
+            await asyncio.sleep(
+                COLLECT_INTERVAL
             )
 
     # ========================================================
@@ -1630,41 +1520,11 @@ class AuctionCollector:
 # MAIN
 # ============================================================
 
-async def main():
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        "STALZONE AUCTION COLLECTOR"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        f"LOCAL DATABASE: "
-        f"{DATABASE_PATH}"
-    )
-
-    print(
-        f"COLLECT INTERVAL: "
-        f"{COLLECT_INTERVAL}s"
-    )
+async def main() -> None:
 
     database = LocalItemDatabase(
         DATABASE_PATH
     )
-
-    database.load()
-
-    if not database.items:
-
-        raise RuntimeError(
-            "No items found in local database"
-        )
 
     collector = AuctionCollector(
         database
@@ -1672,54 +1532,29 @@ async def main():
 
     try:
 
-        await collector.get_access_token()
+        print(
+            "=" * 60
+        )
 
-        while True:
+        print(
+            "STALZONE AUCTION COLLECTOR"
+        )
 
-            print(
-                "=" * 60
-            )
+        print(
+            "=" * 60
+        )
 
-            print(
-                "COLLECTION CYCLE START"
-            )
+        print(
+            f"LOCAL DATABASE: "
+            f"{DATABASE_PATH}"
+        )
 
-            print(
-                "=" * 60
-            )
+        print(
+            f"COLLECT INTERVAL: "
+            f"{COLLECT_INTERVAL}s"
+        )
 
-            try:
-
-                await collector.monitor_snipers()
-
-                await collector.collect_all()
-
-            except Exception as e:
-
-                print(
-                    f"CYCLE ERROR | "
-                    f"{type(e).__name__}: "
-                    f"{e}"
-                )
-
-                collector.access_token = None
-
-            print(
-                "=" * 60
-            )
-
-            print(
-                f"CYCLE FINISHED | "
-                f"sleep={COLLECT_INTERVAL}s"
-            )
-
-            print(
-                "=" * 60
-            )
-
-            await asyncio.sleep(
-                COLLECT_INTERVAL
-            )
+        await collector.run()
 
     finally:
 
@@ -1732,14 +1567,6 @@ async def main():
 
 if __name__ == "__main__":
 
-    try:
-
-        asyncio.run(
-            main()
-        )
-
-    except KeyboardInterrupt:
-
-        print(
-            "COLLECTOR STOPPED"
-        )
+    asyncio.run(
+        main()
+    )
