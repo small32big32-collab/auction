@@ -1,15 +1,19 @@
 import os
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import create_client
 
+# Настройки Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = FastAPI(title="Stalzone Auction API")
 
+
+# --- Схемы данных ---
 
 class SniperCreate(BaseModel):
     user_id: int
@@ -19,27 +23,51 @@ class SniperCreate(BaseModel):
     rarity: str
     threshold: float
 
-
 class SniperUpdate(BaseModel):
     threshold: float
 
 
+# --- Функция проверки лицензии ---
+
 def verify_license_key(license_key: str) -> bool:
+    """Проверяет активность ключа и срок его действия с учётом таблицы licenses."""
     if not license_key:
         return False
     clean_key = license_key.strip()
     
+    # Резервный/демо ключ для тестов
     if clean_key == "STALZONE-STARS-KEY-DEMO":
         return True
         
     try:
-        res = supabase.table("licenses").select("is_active").eq("key", clean_key).execute()
-        if res.data and res.data[0].get("is_active") is True:
+        res = (
+            supabase.table("licenses")
+            .select("is_active, expires_at")
+            .eq("key", clean_key)
+            .execute()
+        )
+        
+        if res.data and len(res.data) > 0:
+            row = res.data[0]
+            
+            # 1. Проверка флага активности
+            if not row.get("is_active"):
+                return False
+            
+            # 2. Проверка срока действия (expires_at)
+            expires_at_str = row.get("expires_at")
+            if expires_at_str:
+                # Конвертируем строку с таймзоной в объект datetime и сравниваем с текущим временем
+                expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > expires_at:
+                    return False
+                    
             return True
+            
         return False
     except Exception as e:
         print(f"⚠️ Ошибка проверки ключа: {e}")
-        return True  # Резервный доступ при сбое таблицы лицензий
+        return False
 
 
 # --- Эндпоинты для товаров и цен ---
@@ -59,7 +87,7 @@ def get_items_by_key(license_key: str, telegram_id: Optional[int] = None, limit:
     except Exception as e:
         print(f"⚠️ Ошибка обращения к таблице items: {e}")
 
-    # 2. Резервный сбор уникальных артефактов из истории цен с диапазоном до 10000 записей
+    # 2. Резервный сбор уникальных артефактов из истории цен (до 10000 записей)
     try:
         items = supabase.table("price_history").select("item_id, item_name, rarity, category").range(0, 9999).execute()
         unique_items = {}
