@@ -1,4 +1,3 @@
-```python
 import os
 import time
 import asyncio
@@ -1923,4 +1922,3 @@ if __name__ == "__main__":
         logger.info(
             "Collector остановлен."
         )
-```
