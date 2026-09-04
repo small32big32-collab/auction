@@ -13,6 +13,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazw
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
 
 # --- Настройки контактов и документов ---
+SUPPORT_TGG = "https://t.me/montastaile_life"
 SUPPORT_TG = "https://t.me/ungdaddy"
 PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
@@ -45,6 +46,7 @@ def get_auth_inline_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Купить ключ", callback_data="open_buy_menu")],
         [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_TG)],
+        [InlineKeyboardButton(text="Канал с новостями", url=SUPPORT_TGG)],
         [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
         [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
     ])
@@ -56,6 +58,7 @@ def get_main_inline_menu():
         [InlineKeyboardButton(text="🛒 Купить ключ", callback_data="open_buy_menu")],
         [InlineKeyboardButton(text="🔑 Сменить ключ", callback_data="menu_change_key")],
         [InlineKeyboardButton(text="💬 Техническая поддержка", url=SUPPORT_TG)],
+        [InlineKeyboardButton(text="Канал с новостями", url=SUPPORT_TGG)],
         [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=TERMS_URL)],
         [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)]
     ])
