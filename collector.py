@@ -22,10 +22,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 def load_tracked_items() -> list[dict]:
     """
     Загрузка списка всех отслеживаемых артефактов и предметов Stalzone.
-    Если у вас есть внешний JSON или модуль stalzone_db, подключите его здесь.
     """
-    # Пример структуры отслеживаемых предметов. 
-    # Замените или расширьте данным из вашей базы/модуля.
     return [
         {"item_id": "art_sun", "item_name": "Солнце", "category": "Артефакты"},
         {"item_id": "art_goldfish", "item_name": "Золотая рыбка", "category": "Артефакты"},
@@ -38,7 +35,6 @@ def load_tracked_items() -> list[dict]:
 def sync_all_items_to_supabase(tracked_items: list[dict]):
     """
     Массовая первичная синхронизация всего каталога с таблицей `items`.
-    Заполняет базу за 1 секунду, чтобы у Telegram-бота всегда был полный каталог.
     """
     logger.info(f"🔄 Начинаем синхронизацию {len(tracked_items)} предметов с базой Supabase...")
     unique_db = {}
@@ -48,7 +44,7 @@ def sync_all_items_to_supabase(tracked_items: list[dict]):
         if i_id not in unique_db:
             unique_db[i_id] = {
                 "item_id": i_id,
-                "id": i_id,
+                # Поле "id" удалено, так как в таблице items используется item_id
                 "name": item.get("item_name") or item.get("name") or i_id,
                 "category": item.get("category", "Артефакты")
             }
@@ -80,7 +76,7 @@ async def send_telegram_notification(user_id: int, text: str):
         try:
             await client.post(url, json=payload, timeout=5.0)
         except Exception as e:
-            logger.error(f" Ошибка отправки уведомления user_id={user_id}: {e}")
+            logger.error(f"⚠️ Ошибка отправки уведомления user_id={user_id}: {e}")
 
 
 # --- Воркеры ---
@@ -88,19 +84,15 @@ async def send_telegram_notification(user_id: int, text: str):
 async def fetch_auction_prices_for_item(item_id: str) -> list[dict]:
     """
     Фоновая имитация/запрос к Stalzone API для получения лотов с аукциона.
-    Вставьте сюда реальный парсинг/запрос к API Stalzone.
     """
-    # Заглушка: возвращает структуры найденных цен по редкостям
     rarities = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
     results = []
     
-    # Пример сгенерированных лотов
     for r in rarities:
         results.append({
             "item_id": item_id,
             "rarity": r,
             "min_buyout_price": 150000.0,
-            "buyout_price": 150000.0
         })
     return results
 
@@ -123,13 +115,17 @@ async def general_collector_worker(tracked_items: list[dict]):
                 
                 history_batch = []
                 for entry in auction_data:
+                    # Безопасное преобразование цены в целое число (bigint), чтобы избежать ошибки 22P02
+                    raw_price = entry.get("min_buyout_price")
+                    min_price_int = int(float(raw_price)) if raw_price is not None else 0
+
                     history_batch.append({
                         "item_id": i_id,
                         "item_name": i_name,
                         "rarity": entry.get("rarity", "Обычный"),
                         "category": category,
-                        "min_buyout_price": entry.get("min_buyout_price"),
-                        "buyout_price": entry.get("buyout_price")
+                        "min_buyout_price": min_price_int
+                        # Поле "buyout_price" удалено, так как его нет в таблице price_history
                     })
 
                 if history_batch:
@@ -156,7 +152,6 @@ async def sniper_monitoring_worker():
 
     while True:
         try:
-            # 1. Получаем все активные снайперы из таблицы user_snipers
             snipers_res = supabase.table("user_snipers").select("*").execute()
             snipers = snipers_res.data or []
 
@@ -168,7 +163,6 @@ async def sniper_monitoring_worker():
                     rarity = sniper.get("rarity", "Обычный")
                     threshold = float(sniper.get("threshold", 0))
 
-                    # 2. Получаем последнюю минимальную цену из price_history
                     price_res = (
                         supabase.table("price_history")
                         .select("min_buyout_price")
@@ -182,7 +176,6 @@ async def sniper_monitoring_worker():
                     if price_res.data:
                         current_price = float(price_res.data[0].get("min_buyout_price") or 0)
 
-                        # 3. Если текущая цена ниже или равна порогу снайпера
                         if 0 < current_price <= threshold:
                             msg = (
                                 f"🎯 **СНАЙПЕР СРАБОТАЛ!**\n\n"
@@ -193,11 +186,8 @@ async def sniper_monitoring_worker():
                                 f"Срочно заходите в игру для выкупа!"
                             )
                             await send_telegram_notification(user_id, msg)
-                            
-                            # Удаляем снайпер после срабатывания (по желанию)
-                            # supabase.table("user_snipers").delete().eq("id", sniper["id"]).execute()
 
-            await asyncio.sleep(5) # Частота проверки снайперов (раз в 5 сек)
+            await asyncio.sleep(5)
 
         except Exception as e:
             logger.error(f"⚠️ Ошибка воркера снайперов: {e}")
@@ -210,10 +200,8 @@ async def main():
     tracked_items = load_tracked_items()
     logger.info(f"📦 Инициализировано отслеживаемых предметов: {len(tracked_items)}")
 
-    # 🚀 Мгновенно обновляем полный каталог предметов при старте
     sync_all_items_to_supabase(tracked_items)
 
-    # Параллельный запуск коллектора цен и снайперов
     await asyncio.gather(
         general_collector_worker(tracked_items),
         sniper_monitoring_worker(),
