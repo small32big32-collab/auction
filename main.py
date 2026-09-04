@@ -49,7 +49,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         "Не настроены SUPABASE_URL / SUPABASE_KEY"
     )
 
-if SUPABASE_KEY == "ВСТАВЬ_СЮДА_СВОЙ_SUPABASE_KEY":
+if SUPABASE_KEY =="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo":
     print(
         "⚠️ ВНИМАНИЕ: SUPABASE_KEY ещё не вставлен в main.py"
     )
