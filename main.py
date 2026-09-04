@@ -26,7 +26,7 @@ except ValueError:
 
 
 # ============================================================
-# ПРОВЕРКА КОНФИГУРАЦИИ
+# ПРОВЕРКА НАСТРОЕК
 # ============================================================
 
 missing_variables = []
@@ -56,7 +56,7 @@ try:
     )
 except Exception as e:
     raise RuntimeError(
-        f"Не удалось создать подключение к Supabase: {e}"
+        f"Не удалось подключиться к Supabase: {e}"
     )
 
 
@@ -66,7 +66,7 @@ except Exception as e:
 
 app = FastAPI(
     title="Stalzone Auction API",
-    version="2.1"
+    version="2.2"
 )
 
 
@@ -121,8 +121,8 @@ def clean_rarity(value: Optional[str]) -> str:
 
 def mask_license_key(value: str) -> str:
     """
-    Безопасный вывод ключа в логах.
-    Никогда не выводим полный ключ.
+    Безопасный вывод ключа в лог.
+    Полный ключ никогда не выводится.
     """
 
     value = clean_license_key(value)
@@ -172,22 +172,31 @@ def verify_license_key(
     )
 
     # --------------------------------------------------------
-    # Запрос лицензии
+    # Получаем лицензию
+    #
+    # ВАЖНО:
+    # В таблице licenses НЕТ поля id.
+    # Поэтому здесь НЕ используем id.
     # --------------------------------------------------------
 
     try:
+
         response = (
             supabase
             .table("licenses")
             .select(
-                "id, key, is_active, expires_at, telegram_id"
+                "key, is_active, expires_at, telegram_id"
             )
-            .eq("key", license_key)
+            .eq(
+                "key",
+                license_key
+            )
             .limit(1)
             .execute()
         )
 
     except Exception as e:
+
         print(
             "❌ LICENSE DB ERROR | %s"
             % e
@@ -195,7 +204,12 @@ def verify_license_key(
 
         return "db_error"
 
+    # --------------------------------------------------------
+    # Ключ не найден
+    # --------------------------------------------------------
+
     if not response.data:
+
         print(
             "LICENSE INVALID | reason=not_found"
         )
@@ -205,9 +219,8 @@ def verify_license_key(
     license_row = response.data[0]
 
     print(
-        "LICENSE FOUND | id=%s | active=%s | telegram_id=%s"
+        "LICENSE FOUND | active=%s | telegram_id=%s"
         % (
-            license_row.get("id"),
             license_row.get("is_active"),
             license_row.get("telegram_id")
         )
@@ -218,6 +231,7 @@ def verify_license_key(
     # --------------------------------------------------------
 
     if not license_row.get("is_active"):
+
         print(
             "LICENSE INVALID | reason=inactive"
         )
@@ -225,7 +239,7 @@ def verify_license_key(
         return "invalid"
 
     # --------------------------------------------------------
-    # Проверка срока
+    # Проверка срока действия
     # --------------------------------------------------------
 
     expires_at_str = license_row.get("expires_at")
@@ -233,6 +247,7 @@ def verify_license_key(
     if expires_at_str:
 
         try:
+
             expires_at = datetime.fromisoformat(
                 str(expires_at_str).replace(
                     "Z",
@@ -241,6 +256,7 @@ def verify_license_key(
             )
 
             if expires_at.tzinfo is None:
+
                 expires_at = expires_at.replace(
                     tzinfo=timezone.utc
                 )
@@ -254,7 +270,10 @@ def verify_license_key(
                     % expires_at
                 )
 
+                # В таблице licenses нет id.
+                # Обновляем по самому ключу.
                 try:
+
                     (
                         supabase
                         .table("licenses")
@@ -262,14 +281,17 @@ def verify_license_key(
                             "is_active": False
                         })
                         .eq(
-                            "id",
-                            license_row["id"]
+                            "key",
+                            license_key
                         )
                         .execute()
                     )
+
                 except Exception as e:
+
                     print(
-                        "⚠️ Не удалось отключить просроченную лицензию: %s"
+                        "⚠️ Не удалось отключить "
+                        "просроченную лицензию: %s"
                         % e
                     )
 
@@ -297,15 +319,19 @@ def verify_license_key(
         return "ok"
 
     # --------------------------------------------------------
-    # Проверка привязки Telegram ID
+    # Проверяем Telegram ID
     # --------------------------------------------------------
 
     bound_id = license_row.get("telegram_id")
 
-    # Ключ ещё не привязан.
+    # --------------------------------------------------------
+    # Ключ ещё не привязан
+    # --------------------------------------------------------
+
     if bound_id is None:
 
         try:
+
             (
                 supabase
                 .table("licenses")
@@ -313,8 +339,8 @@ def verify_license_key(
                     "telegram_id": telegram_id
                 })
                 .eq(
-                    "id",
-                    license_row["id"]
+                    "key",
+                    license_key
                 )
                 .execute()
             )
@@ -362,6 +388,10 @@ def verify_license_key(
 
         return "invalid"
 
+    # --------------------------------------------------------
+    # Всё успешно
+    # --------------------------------------------------------
+
     print(
         "LICENSE OK | telegram_id=%s"
         % telegram_id
@@ -370,6 +400,10 @@ def verify_license_key(
     return "ok"
 
 
+# ============================================================
+# ОБЯЗАТЕЛЬНАЯ ПРОВЕРКА ЛИЦЕНЗИИ
+# ============================================================
+
 def require_license(
     license_key: str,
     telegram_id: Optional[int] = None
@@ -377,9 +411,9 @@ def require_license(
     """
     Проверяет лицензию.
 
-    ВАЖНО:
-    Ошибка Supabase теперь возвращает HTTP 503,
-    а не маскируется под неправильный ключ.
+    403 — неправильный/просроченный ключ
+    409 — ключ принадлежит другому Telegram
+    503 — проблема с Supabase
     """
 
     status = verify_license_key(
@@ -423,7 +457,8 @@ def require_internal_api_key(
     x_internal_api_key: Optional[str]
 ):
     """
-    Защита административных запросов.
+    Проверка внутреннего ключа для
+    административных endpoint'ов.
     """
 
     if not INTERNAL_API_KEY:
@@ -451,7 +486,7 @@ def require_internal_api_key(
 
 
 # ============================================================
-# ПОЛУЧЕНИЕ ВСЕХ СТРОК
+# ПОЛУЧЕНИЕ ВСЕХ СТРОК ИЗ ТАБЛИЦЫ
 # ============================================================
 
 def fetch_all_rows(
@@ -481,7 +516,8 @@ def fetch_all_rows(
         except Exception as e:
 
             raise RuntimeError(
-                f"Ошибка чтения таблицы {table}: {e}"
+                f"Ошибка чтения таблицы "
+                f"{table}: {e}"
             )
 
         chunk = response.data or []
@@ -506,9 +542,13 @@ def read_root():
     return {
         "status": "ok",
         "message": "Stalzone Auction API Running",
-        "version": "2.1"
+        "version": "2.2"
     }
 
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.get("/health")
 @app.get("/api/health")
@@ -516,12 +556,12 @@ def health():
 
     return {
         "status": "ok",
-        "version": "2.1"
+        "version": "2.2"
     }
 
 
 # ============================================================
-# ЛИЦЕНЗИИ
+# СОЗДАНИЕ ЛИЦЕНЗИИ
 # ============================================================
 
 @app.post("/licenses/generate")
@@ -532,9 +572,6 @@ def generate_license(
         default=None
     )
 ):
-    """
-    Создание лицензии.
-    """
 
     require_internal_api_key(
         x_internal_api_key
@@ -581,8 +618,11 @@ def generate_license(
             existing = (
                 supabase
                 .table("licenses")
-                .select("id")
-                .eq("key", candidate)
+                .select("key")
+                .eq(
+                    "key",
+                    candidate
+                )
                 .limit(1)
                 .execute()
             )
@@ -592,8 +632,8 @@ def generate_license(
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    "Ошибка проверки уникальности "
-                    "ключа."
+                    "Ошибка проверки "
+                    "уникальности ключа."
                 )
             )
 
@@ -701,7 +741,7 @@ def get_items_by_key(
         )
 
     # --------------------------------------------------------
-    # Запасной источник — price_history
+    # Резервный источник — price_history
     # --------------------------------------------------------
 
     try:
@@ -1266,7 +1306,7 @@ def delete_single_sniper(
 
 
 # ============================================================
-# УДАЛЕНИЕ ВСЕХ СНАЙПЕРОВ ПОЛЬЗОВАТЕЛЯ
+# УДАЛЕНИЕ ВСЕХ СНАЙПЕРОВ
 # ============================================================
 
 @app.delete("/snipers/{user_id}")
@@ -1344,4 +1384,3 @@ if __name__ == "__main__":
         ),
         reload=False
     )
-
