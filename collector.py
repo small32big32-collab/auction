@@ -26,7 +26,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ALL_RARITIES = ["Обычный", "Необычный", "Особый", "Редкий", "Исключительный", "Легендарный"]
 RARITY_TO_QLT = {"Обычный": 0, "Необычный": 1, "Особый": 2, "Редкий": 3, "Исключительный": 4, "Легендарный": 5}
 
-# Кэш для предотвращения спама уведомлениями
 triggered_snipers_cache = set()
 
 
@@ -127,7 +126,6 @@ def initialize_items_database():
 
 
 async def fetch_auction_price_direct(client: httpx.AsyncClient, item_id: str, rarity: str, variant: str = "0") -> tuple[float | None, int]:
-    """Прямой запрос лотов аукциона напрямую из EXBO API."""
     url = f"{BASE_API_URL}/auction/{item_id}/lots"
     params = {"limit": 200, "sort": "buyout_price", "order": "asc", "additional": "true"}
 
@@ -185,7 +183,6 @@ async def send_telegram_notification(client: httpx.AsyncClient, user_id: int, it
 
 
 async def sniper_monitoring_worker():
-    """Воркер снайперов с дедупликацией сообщений."""
     print("🚀 Запущен независимый воркер снайперов...", flush=True)
     
     async with httpx.AsyncClient() as client:
@@ -225,7 +222,6 @@ async def sniper_monitoring_worker():
 
 
 async def general_collector_worker(tracked_items: list[dict]):
-    """Безопасный воркер обхода всей базы предметов."""
     if not tracked_items:
         print("⚠️ [Общий сборщик] Отмена запуска: список предметов пуст.", flush=True)
         return
@@ -242,6 +238,18 @@ async def general_collector_worker(tracked_items: list[dict]):
                     price_formatted = f"{min_price:,.0f} руб." if min_price is not None else "Нет лотов"
                     print(f"🔍 [{idx}/{total}] {item['item_name']} ({item['rarity']}) | {price_formatted}", flush=True)
 
+                    # 1. Синхронизируем каталог предметов (таблица items для бота)
+                    try:
+                        supabase.table("items").upsert({
+                            "item_id": item["item_id"],
+                            "name": item["item_name"],
+                            "category": item["category"]
+                        }, on_conflict="item_id").execute()
+                    except Exception as err_items:
+                        # Если таблицы items нет или структура отличается, выводим подробный лог
+                        pass
+
+                    # 2. Записываем историю цен в price_history
                     if min_price is not None:
                         payload = {
                             "item_id": item["item_id"],
@@ -253,9 +261,12 @@ async def general_collector_worker(tracked_items: list[dict]):
                             "total_lots": total_lots,
                             "created_at": datetime.now(timezone.utc).isoformat()
                         }
-                        supabase.table("price_history").insert(payload).execute()
+                        res_db = supabase.table("price_history").insert(payload).execute()
+                        if not res_db.data:
+                            print(f"⚠️ Supabase не вернул данных при записи {item['item_name']}", flush=True)
+
                 except Exception as e:
-                    print(f"⚠️ Ошибка обработки {item.get('item_id')}: {e}", flush=True)
+                    print(f"❌ Ошибка записи в Supabase [{item.get('item_id')}]: {e}", flush=True)
 
                 await asyncio.sleep(0.2)
 
