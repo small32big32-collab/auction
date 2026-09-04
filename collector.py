@@ -67,6 +67,7 @@ MAX_CONCURRENT_REQUESTS = int(
     )
 )
 
+
 # Если реальный лот существует,
 # но в нём отсутствует/некорректна цена.
 DEFAULT_AUCTION_PRICE = 150000
@@ -76,9 +77,7 @@ DEFAULT_AUCTION_PRICE = 150000
 # LOCAL OFFICIAL DATABASE
 # ============================================================
 
-PROJECT_ROOT = (
-    Path(__file__).resolve().parent
-)
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 DATABASE_PATH = (
     PROJECT_ROOT
@@ -87,7 +86,7 @@ DATABASE_PATH = (
     / "items"
 )
 
-# Работаем именно с артефактами.
+# Работаем именно с официальными артефактами.
 ARTIFACTS_DATABASE_PATH = (
     DATABASE_PATH
     / "artefact"
@@ -289,6 +288,7 @@ class LocalItemDatabase:
                     skipped += 1
                     continue
 
+                # ID берём ТОЛЬКО из официального JSON.
                 item_id = data.get(
                     "id"
                 )
@@ -301,6 +301,11 @@ class LocalItemDatabase:
                 item_id = str(
                     item_id
                 ).strip()
+
+                if not item_id:
+
+                    skipped += 1
+                    continue
 
                 name_data = data.get(
                     "name"
@@ -362,7 +367,6 @@ class LocalItemDatabase:
                     "file": str(
                         file_path
                     ),
-
                 }
 
                 loaded += 1
@@ -412,153 +416,11 @@ class LocalItemDatabase:
         )
 
 
+# Загружаем официальную базу ОДИН РАЗ
+# при запуске коллектора.
 local_database = LocalItemDatabase(
     ARTIFACTS_DATABASE_PATH
 )
-
-
-# ============================================================
-# SYNC LOCAL DATABASE -> SUPABASE
-# ============================================================
-
-async def sync_local_items_to_supabase() -> int:
-
-    """
-    Синхронизирует официальную локальную базу
-    артефактов с Supabase.items.
-
-    Источник:
-        stalzone-database/ru/items/artefact/**/*.json
-
-    В Supabase записываются только:
-
-        item_id
-        name
-        category
-
-    ID берётся ТОЛЬКО из официального JSON.
-    """
-
-    items = local_database.get_all()
-
-    if not items:
-
-        logger.warning(
-            "В официальной базе артефактов ничего не найдено."
-        )
-
-        return 0
-
-    payload = []
-
-    for item in items:
-
-        item_id = str(
-            item.get(
-                "id",
-                "",
-            )
-        ).strip()
-
-        if not item_id:
-            continue
-
-        name = str(
-            item.get(
-                "name",
-                "",
-            )
-        ).strip()
-
-        category = item.get(
-            "category"
-        )
-
-        payload.append({
-
-            "item_id": item_id,
-
-            "name": (
-                name
-                if name
-                else item_id
-            ),
-
-            "category": category,
-
-        })
-
-    if not payload:
-
-        logger.warning(
-            "После обработки локальной базы "
-            "не осталось корректных предметов."
-        )
-
-        return 0
-
-    logger.info(
-        "Подготовлено предметов для Supabase: %s",
-        len(payload),
-    )
-
-    # Supabase/PostgREST позволяет передавать
-    # список строк одним upsert-запросом.
-    #
-    # Конфликт определяется по item_id.
-    batch_size = 500
-
-    synced = 0
-
-    for start in range(
-        0,
-        len(payload),
-        batch_size,
-    ):
-
-        batch = payload[
-            start:start + batch_size
-        ]
-
-        try:
-
-            (
-                supabase
-                .table("items")
-                .upsert(
-                    batch,
-                    on_conflict="item_id",
-                )
-                .execute()
-            )
-
-            synced += len(batch)
-
-            logger.info(
-                "Синхронизировано в Supabase: %s/%s",
-                min(
-                    start + len(batch),
-                    len(payload),
-                ),
-                len(payload),
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Ошибка синхронизации batch %s-%s: %s",
-                start,
-                start + len(batch),
-                exc,
-            )
-
-    logger.info(
-        "Синхронизация официальной базы завершена. "
-        "Обработано: %s",
-        synced,
-    )
-
-    return synced
 
 
 # ============================================================
@@ -745,7 +607,7 @@ async def fetch_auction_lots(
     if not item_id:
         return []
 
-    # Auction API является последней проверкой ID.
+    # ID уже признан несуществующим API.
     if item_id in _auction_invalid_ids:
 
         return []
@@ -1216,7 +1078,7 @@ def get_lot_buyout_price(
 
 
 # ============================================================
-# RARITY
+# RARITY DETECTION
 # ============================================================
 
 RARITY_KEYS = {
@@ -1478,42 +1340,70 @@ async def fetch_auction_price(
 
 
 # ============================================================
-# SUPABASE ITEMS
+# LOCAL ITEMS
 # ============================================================
 
 async def load_tracked_items() -> list[dict]:
 
-    try:
+    """
+    ВАЖНО:
 
-        response = (
-            supabase
-            .table("items")
-            .select(
-                "item_id,name,category"
+    Источник списка предметов —
+    только официальная локальная база:
+
+        stalzone-database/ru/items/artefact
+
+    Supabase.items здесь НЕ используется.
+
+    Каждый элемент преобразуется в формат,
+    который нужен коллектору.
+    """
+
+    items = []
+
+    for local_item in local_database.get_all():
+
+        item_id = str(
+            local_item.get(
+                "id",
+                "",
             )
-            .execute()
-        )
+        ).strip()
 
-        items = (
-            response.data
-            or []
-        )
+        if not item_id:
 
-        logger.info(
-            "Загружено предметов из Supabase: %s",
-            len(items),
-        )
+            continue
 
-        return items
+        item_name = str(
+            local_item.get(
+                "name",
+                "",
+            )
+        ).strip()
 
-    except Exception as exc:
+        items.append({
 
-        logger.exception(
-            "Ошибка загрузки items: %s",
-            exc,
-        )
+            "item_id":
+                item_id,
 
-        return []
+            "name":
+                item_name
+                if item_name
+                else item_id,
+
+            "category":
+                local_item.get(
+                    "category"
+                ),
+
+        })
+
+    logger.info(
+        "Загружено предметов из официальной базы: %s",
+        len(items),
+    )
+
+    return items
 
 
 # ============================================================
@@ -1555,11 +1445,8 @@ async def send_telegram_message(
         ) as client:
 
             response = await client.post(
-
                 url,
-
                 json=payload,
-
             )
 
         if response.is_success:
@@ -1590,6 +1477,14 @@ async def save_price(
     price: float,
     rarity: str,
 ) -> None:
+
+    """
+    Supabase используется здесь именно
+    как хранилище результатов аукциона.
+
+    Источник item_id/name —
+    официальная локальная база.
+    """
 
     try:
 
@@ -1655,6 +1550,27 @@ async def collect_item(
     )
 
     if not item_id:
+
+        return
+
+    # --------------------------------------------------------
+    # Дополнительная защита:
+    # ID должен существовать в локальной официальной базе.
+    # --------------------------------------------------------
+
+    official_item = (
+        local_database.get_by_id(
+            item_id
+        )
+    )
+
+    if official_item is None:
+
+        logger.warning(
+            "Пропуск неизвестного ID %s — "
+            "его нет в официальной базе.",
+            item_id,
+        )
 
         return
 
@@ -1729,12 +1645,13 @@ async def collect_item(
 
 async def collect_all_items() -> None:
 
+    # Получаем список ПРЯМО ИЗ LOCAL DATABASE.
     items = await load_tracked_items()
 
     if not items:
 
         logger.warning(
-            "Список items пуст после синхронизации."
+            "Список официальных предметов пуст."
         )
 
         return
@@ -1773,26 +1690,25 @@ async def collect_all_items() -> None:
     )
 
 
+# ============================================================
+# COLLECTION CYCLE
+# ============================================================
+
 async def sync_and_collect() -> None:
 
     """
-    Полный цикл:
+    Один цикл коллектора:
 
-    1. Сканируем официальную БД.
-    2. Синхронизируем предметы в Supabase.
-    3. Загружаем IDs из Supabase.
-    4. Запрашиваем Auction API.
-    5. Сохраняем цены.
+    1. Берём официальные ID из
+       stalzone-database.
+    2. Проверяем эти ID через Auction API.
+    3. Получаем лоты.
+    4. Определяем минимальную цену каждой редкости.
+    5. Сохраняем результат в Supabase.price_history.
+
+    Никакой синхронизации официальной базы
+    в Supabase.items здесь нет.
     """
-
-    synced = (
-        await sync_local_items_to_supabase()
-    )
-
-    logger.info(
-        "Из официальной базы синхронизировано: %s",
-        synced,
-    )
 
     await collect_all_items()
 
@@ -1810,8 +1726,10 @@ _sniper_last_alert: dict[
 async def load_snipers() -> list[dict]:
 
     """
+    user_snipers — это пользовательские настройки,
+    поэтому они правильно хранятся в Supabase.
+
     В таблице user_snipers нет поля enabled.
-    Поэтому используется select("*").
     """
 
     try:
@@ -1871,11 +1789,19 @@ async def monitor_snipers() -> None:
 
         if item_id:
 
-            unique_ids.add(
-                str(
+            item_id = str(
+                item_id
+            ).strip()
+
+            # Снайпер тоже может работать
+            # только с официальным ID.
+            if local_database.get_by_id(
+                item_id
+            ) is not None:
+
+                unique_ids.add(
                     item_id
-                ).strip()
-            )
+                )
 
     # --------------------------------------------------------
     # Проверяем Auction API
@@ -1930,18 +1856,48 @@ async def monitor_snipers() -> None:
             item_id
         ).strip()
 
+        # ----------------------------------------------------
+        # ID обязан присутствовать
+        # в официальной базе.
+        # ----------------------------------------------------
+
+        official_item = (
+            local_database.get_by_id(
+                item_id
+            )
+        )
+
+        if official_item is None:
+
+            logger.warning(
+                "Снайпер %s содержит ID %s, "
+                "которого нет в официальной базе.",
+                sniper_id,
+                item_id,
+            )
+
+            continue
+
         if item_id in _auction_invalid_ids:
 
             continue
 
         item_name = (
+
             sniper.get(
                 "item_name"
             )
+
             or sniper.get(
                 "name"
             )
+
+            or official_item.get(
+                "name"
+            )
+
             or item_id
+
         )
 
         rarity = normalize_rarity(
@@ -2092,12 +2048,15 @@ async def monitor_snipers() -> None:
         # ----------------------------------------------------
 
         telegram_id = (
+
             sniper.get(
                 "telegram_id"
             )
+
             or sniper.get(
                 "user_id"
             )
+
         )
 
         if not telegram_id:
@@ -2175,14 +2134,14 @@ async def collector_loop() -> None:
     )
 
     logger.info(
-        "Предметов в локальной базе: %s",
+        "Предметов в официальной базе: %s",
         len(
             local_database.items_by_id
         ),
     )
 
     # --------------------------------------------------------
-    # Первая синхронизация сразу после запуска.
+    # Первый запуск сразу.
     # --------------------------------------------------------
 
     try:
@@ -2197,7 +2156,7 @@ async def collector_loop() -> None:
         )
 
     # --------------------------------------------------------
-    # Дальше обычный цикл.
+    # Основной цикл.
     # --------------------------------------------------------
 
     while True:
