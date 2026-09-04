@@ -29,13 +29,8 @@ STALZONE_DATABASE_PATH = os.getenv(
     "/app/stalzone-database/ru/items/artefact"
 )
 
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL"
-)
-
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY"
-)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 STALCRAFT_CLIENT_ID = os.getenv(
     "STALCRAFT_CLIENT_ID"
@@ -90,9 +85,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-logger = logging.getLogger(
-    "collector"
-)
+logger = logging.getLogger("collector")
 
 
 # ============================================================
@@ -194,6 +187,24 @@ class LocalItemDatabase:
             Dict[str, Any]
         ] = {}
 
+        # ----------------------------------------------------
+        # ВАЖНО:
+        # Для каждого item_id храним ВСЕ найденные
+        # _variants/<item_id>/<N>.json
+        #
+        # Это нужно для проверки:
+        #
+        # auction ptn=5
+        #       ↓
+        # _variants/<id>/5.json
+        #
+        # ----------------------------------------------------
+
+        self.variants: Dict[
+            str,
+            Dict[str, str]
+        ] = {}
+
         logger.info(
             "Путь официальной базы: %s",
             self.base_path
@@ -201,9 +212,9 @@ class LocalItemDatabase:
 
         self.load()
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOAD
-    # --------------------------------------------------------
+    # ========================================================
 
     def load(self) -> None:
 
@@ -215,15 +226,15 @@ class LocalItemDatabase:
             )
 
         json_files = list(
-            self.base_path.rglob(
-                "*.json"
-            )
+            self.base_path.rglob("*.json")
         )
 
         logger.info(
             "Найдено JSON-файлов: %d",
             len(json_files)
         )
+
+        variant_files_count = 0
 
         for file_path in json_files:
 
@@ -253,9 +264,7 @@ class LocalItemDatabase:
             ):
                 continue
 
-            item_id = data.get(
-                "id"
-            )
+            item_id = data.get("id")
 
             if not isinstance(
                 item_id,
@@ -339,17 +348,15 @@ class LocalItemDatabase:
                 color = "DEFAULT"
 
             # ------------------------------------------------
-            # VARIANT ИЗ ПУТИ
+            # ЛОКАЛЬНЫЙ _VARIANT
             # ------------------------------------------------
 
-            variant = (
-                self.detect_variant(
-                    file_path
-                )
+            local_variant = self.detect_variant(
+                file_path
             )
 
             # ------------------------------------------------
-            # РЕДКОСТЬ ИЗ JSON
+            # РЕДКОСТЬ
             # ------------------------------------------------
 
             json_rarity = (
@@ -359,7 +366,24 @@ class LocalItemDatabase:
             )
 
             # ------------------------------------------------
-            # СОХРАНЕНИЕ
+            # СОБИРАЕМ ВСЕ _variants
+            # ------------------------------------------------
+
+            if local_variant != "0":
+
+                variant_map = self.variants.setdefault(
+                    item_id,
+                    {}
+                )
+
+                variant_map[
+                    local_variant
+                ] = str(file_path)
+
+                variant_files_count += 1
+
+            # ------------------------------------------------
+            # ОСНОВНАЯ ЗАПИСЬ ITEM
             # ------------------------------------------------
 
             if item_id not in self.items:
@@ -382,7 +406,7 @@ class LocalItemDatabase:
                         color,
 
                     "variant":
-                        variant,
+                        local_variant,
 
                     "json_rarity":
                         json_rarity,
@@ -397,21 +421,18 @@ class LocalItemDatabase:
                     item_id
                 ]
 
-                # Если текущий вариант 0,
-                # а найден реальный вариант —
-                # сохраняем его.
+                # Если основной файл был найден раньше,
+                # а сейчас нашли _variants — сохраняем
+                # первый реальный variant для совместимости.
                 if (
-                    current.get(
-                        "variant"
-                    ) == "0"
-                    and variant != "0"
+                    current.get("variant") == "0"
+                    and local_variant != "0"
                 ):
 
                     current[
                         "variant"
-                    ] = variant
+                    ] = local_variant
 
-                # Если редкость ещё не определена
                 if (
                     not current.get(
                         "json_rarity"
@@ -434,9 +455,19 @@ class LocalItemDatabase:
             len(self.items)
         )
 
-    # --------------------------------------------------------
-    # DETECT VARIANT FROM FILE PATH
-    # --------------------------------------------------------
+        logger.info(
+            "Файлов _variants найдено: %d",
+            variant_files_count
+        )
+
+        logger.info(
+            "Предметов с _variants: %d",
+            len(self.variants)
+        )
+
+    # ========================================================
+    # DETECT VARIANT FROM PATH
+    # ========================================================
 
     @staticmethod
     def detect_variant(
@@ -455,15 +486,7 @@ class LocalItemDatabase:
                 "_variants"
             )
 
-            # Структура:
-            #
-            # .../_variants/<item_id>/<variant>.json
-            #
-            # Например:
-            #
-            # .../_variants/4l7p/1.json
-            #
-            # variant = 1
+            # .../_variants/<item_id>/<N>.json
 
             if index + 2 < len(parts):
 
@@ -475,9 +498,7 @@ class LocalItemDatabase:
                     ".json"
                 ):
 
-                    variant = (
-                        variant[:-5]
-                    )
+                    variant = variant[:-5]
 
                 if variant:
 
@@ -491,9 +512,94 @@ class LocalItemDatabase:
 
         return "0"
 
-    # --------------------------------------------------------
-    # DETECT RARITY FROM JSON
-    # --------------------------------------------------------
+    # ========================================================
+    # GET LOCAL VARIANTS
+    # ========================================================
+
+    def get_variants(
+        self,
+        item_id: str
+    ) -> Dict[str, str]:
+
+        return self.variants.get(
+            item_id,
+            {}
+        )
+
+    # ========================================================
+    # CHECK LOCAL VARIANT
+    # ========================================================
+
+    def has_variant(
+        self,
+        item_id: str,
+        variant: int
+    ) -> bool:
+
+        return str(variant) in self.variants.get(
+            item_id,
+            {}
+        )
+
+    # ========================================================
+    # VARIANT FILE
+    # ========================================================
+
+    def get_variant_file(
+        self,
+        item_id: str,
+        variant: int
+    ) -> Optional[str]:
+
+        return self.variants.get(
+            item_id,
+            {}
+        ).get(
+            str(variant)
+        )
+
+    # ========================================================
+    # DEBUG VARIANTS
+    # ========================================================
+
+    def log_item_variants(
+        self,
+        item_id: str
+    ) -> None:
+
+        variants = self.get_variants(
+            item_id
+        )
+
+        if not variants:
+
+            logger.info(
+                "LOCAL VARIANTS | "
+                "ID=%s | нет _variants",
+                item_id
+            )
+
+            return
+
+        ordered = sorted(
+            variants.keys(),
+            key=lambda x: (
+                int(x)
+                if str(x).isdigit()
+                else 999
+            )
+        )
+
+        logger.info(
+            "LOCAL VARIANTS | "
+            "ID=%s | [%s]",
+            item_id,
+            ", ".join(ordered)
+        )
+
+    # ========================================================
+    # DETECT RARITY
+    # ========================================================
 
     @staticmethod
     def detect_json_rarity(
@@ -504,10 +610,6 @@ class LocalItemDatabase:
             obj: Any
         ) -> Optional[str]:
 
-            # -----------------------------------------------
-            # DICT
-            # -----------------------------------------------
-
             if isinstance(
                 obj,
                 dict
@@ -517,9 +619,6 @@ class LocalItemDatabase:
                     "key"
                 )
 
-                # ВАЖНО:
-                # key иногда бывает dict/list.
-                # Поэтому проверяем только str.
                 if isinstance(
                     key,
                     str
@@ -537,19 +636,13 @@ class LocalItemDatabase:
 
                 for value in obj.values():
 
-                    result = (
-                        recursive_search(
-                            value
-                        )
+                    result = recursive_search(
+                        value
                     )
 
                     if result:
 
                         return result
-
-            # -----------------------------------------------
-            # LIST
-            # -----------------------------------------------
 
             elif isinstance(
                 obj,
@@ -558,10 +651,8 @@ class LocalItemDatabase:
 
                 for value in obj:
 
-                    result = (
-                        recursive_search(
-                            value
-                        )
+                    result = recursive_search(
+                        value
                     )
 
                     if result:
@@ -574,9 +665,9 @@ class LocalItemDatabase:
             data
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # GET ITEM
-    # --------------------------------------------------------
+    # ========================================================
 
     def get_item(
         self,
@@ -589,9 +680,9 @@ class LocalItemDatabase:
             item_id
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # ALL ITEMS
-    # --------------------------------------------------------
+    # ========================================================
 
     def get_all_items(
         self
@@ -603,9 +694,9 @@ class LocalItemDatabase:
             self.items.values()
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # IDS
-    # --------------------------------------------------------
+    # ========================================================
 
     def get_item_ids(
         self
@@ -658,7 +749,7 @@ def get_qlt(
 
 
 # ============================================================
-# PTN / VARIANT
+# PTN
 # ============================================================
 
 def get_ptn(
@@ -698,59 +789,88 @@ def get_ptn(
         return None
 
 
-def get_lot_variant(
-    lot: Dict[str, Any],
-    item: Dict[str, Any]
-) -> str:
+# ============================================================
+# PTN DEBUG
+# ============================================================
 
-    # --------------------------------------------------------
-    # 1. PRIORITY — PTN FROM AUCTION API
-    # --------------------------------------------------------
+def debug_ptn_mapping(
+    item: Dict[str, Any],
+    lot: Dict[str, Any],
+    local_db: LocalItemDatabase
+) -> None:
+
+    item_id = item.get(
+        "id",
+        "?"
+    )
 
     ptn = get_ptn(
         lot
     )
 
-    if ptn is not None:
-
-        # -1 означает, что variant
-        # в лоте не определён.
-        if ptn >= 0:
-
-            return str(
-                ptn
-            )
-
-    # --------------------------------------------------------
-    # 2. FALLBACK — LOCAL DATABASE
-    # --------------------------------------------------------
-
-    local_variant = item.get(
-        "variant",
-        "0"
+    qlt = get_qlt(
+        lot
     )
 
-    if local_variant is None:
+    if ptn is None:
 
-        return "0"
+        return
 
-    return str(
-        local_variant
+    variant_file = (
+        local_db.get_variant_file(
+            item_id,
+            ptn
+        )
     )
+
+    has_variant = (
+        local_db.has_variant(
+            item_id,
+            ptn
+        )
+    )
+
+    if has_variant:
+
+        logger.info(
+            "PTN CHECK | "
+            "ID=%s | "
+            "qlt=%s | "
+            "ptn=%s | "
+            "_variants/%s.json=YES | "
+            "file=%s",
+
+            item_id,
+            qlt,
+            ptn,
+            ptn,
+            variant_file
+        )
+
+    else:
+
+        logger.warning(
+            "PTN CHECK | "
+            "ID=%s | "
+            "qlt=%s | "
+            "ptn=%s | "
+            "_variants/%s.json=NO",
+
+            item_id,
+            qlt,
+            ptn,
+            ptn
+        )
 
 
 # ============================================================
-# РЕДКОСТЬ ЛОТА
+# LOT RARITY
 # ============================================================
 
 def get_lot_rarity(
     lot: Dict[str, Any],
     item: Dict[str, Any]
 ) -> str:
-
-    # --------------------------------------------------------
-    # 1. QLT FROM AUCTION API
-    # --------------------------------------------------------
 
     qlt = get_qlt(
         lot
@@ -768,10 +888,6 @@ def get_lot_rarity(
 
             return rarity
 
-    # --------------------------------------------------------
-    # 2. LOCAL JSON
-    # --------------------------------------------------------
-
     json_rarity = item.get(
         "json_rarity"
     )
@@ -782,10 +898,6 @@ def get_lot_rarity(
     ) and json_rarity:
 
         return json_rarity
-
-    # --------------------------------------------------------
-    # 3. COLOR
-    # --------------------------------------------------------
 
     color = str(
         item.get(
@@ -844,7 +956,6 @@ def get_lot_rarity(
 # ============================================================
 
 _token: Optional[str] = None
-
 _token_expires_at: float = 0
 
 
@@ -978,17 +1089,11 @@ async def fetch_auction_lots(
                 timeout=REQUEST_TIMEOUT
             ) as client:
 
-                response = (
-                    await client.get(
-                        url,
-                        params=params,
-                        headers=headers
-                    )
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=headers
                 )
-
-            # ------------------------------------------------
-            # 401
-            # ------------------------------------------------
 
             if response.status_code == 401:
 
@@ -1004,15 +1109,10 @@ async def fetch_auction_lots(
 
                 continue
 
-            # ------------------------------------------------
-            # 404
-            # ------------------------------------------------
-
             if response.status_code == 404:
 
                 logger.warning(
-                    "Auction API 404 | "
-                    "ID=%s",
+                    "Auction API 404 | ID=%s",
                     item_id
                 )
 
@@ -1021,10 +1121,6 @@ async def fetch_auction_lots(
             response.raise_for_status()
 
             data = response.json()
-
-            # ------------------------------------------------
-            # RESPONSE
-            # ------------------------------------------------
 
             if isinstance(
                 data,
@@ -1067,11 +1163,8 @@ async def fetch_auction_lots(
                 "ID=%s | попытка=%d/%d | %s",
 
                 item_id,
-
                 attempt,
-
                 MAX_RETRIES,
-
                 e
             )
 
@@ -1099,17 +1192,10 @@ def extract_buyout_price(
 ) -> Optional[float]:
 
     keys = [
-
         "buyoutPrice",
-
         "buyout_price",
-
         "buyout",
     ]
-
-    # --------------------------------------------------------
-    # LOT
-    # --------------------------------------------------------
 
     for key in keys:
 
@@ -1137,10 +1223,6 @@ def extract_buyout_price(
         ):
 
             pass
-
-    # --------------------------------------------------------
-    # ADDITIONAL
-    # --------------------------------------------------------
 
     additional = lot.get(
         "additional"
@@ -1178,153 +1260,13 @@ def extract_buyout_price(
 
                 pass
 
-    # --------------------------------------------------------
-    # startPrice НЕ ИСПОЛЬЗУЕМ
-    # --------------------------------------------------------
+    # startPrice намеренно НЕ используем.
 
     return None
 
 
 # ============================================================
-# ANALYZE ITEM
-# ============================================================
-
-async def collect_item_statistics(
-    item_id: str,
-    local_db: LocalItemDatabase
-) -> List[
-    Dict[str, Any]
-]:
-
-    item = local_db.get_item(
-        item_id
-    )
-
-    if not item:
-
-        return []
-
-    lots = await fetch_auction_lots(
-        item_id
-    )
-
-    if lots is None:
-
-        return []
-
-    item_name = item.get(
-        "name",
-        item_id
-    )
-
-    # --------------------------------------------------------
-    # ГРУППИРОВКА:
-    #
-    # (rarity, variant)
-    #
-    # --------------------------------------------------------
-
-    groups: Dict[
-        Tuple[str, str],
-        List[float]
-    ] = {}
-
-    for lot in lots:
-
-        if not isinstance(
-            lot,
-            dict
-        ):
-
-            continue
-
-        price = (
-            extract_buyout_price(
-                lot
-            )
-        )
-
-        if price is None:
-
-            continue
-
-        rarity = (
-            get_lot_rarity(
-                lot,
-                item
-            )
-        )
-
-        variant = (
-            get_lot_variant(
-                lot,
-                item
-            )
-        )
-
-        group_key = (
-            rarity,
-            variant
-        )
-
-        if group_key not in groups:
-
-            groups[
-                group_key
-            ] = []
-
-        groups[
-            group_key
-        ].append(
-            price
-        )
-
-    # --------------------------------------------------------
-    # РЕЗУЛЬТАТ
-    # --------------------------------------------------------
-
-    result = []
-
-    for (
-        rarity,
-        variant
-    ), prices in groups.items():
-
-        if not prices:
-
-            continue
-
-        prices.sort()
-
-        result.append({
-
-            "item_id":
-                item_id,
-
-            "item_name":
-                item_name,
-
-            "rarity":
-                rarity,
-
-            "category":
-                "Артефакт",
-
-            "variant":
-                variant,
-
-            "min_buyout_price":
-                prices[0],
-
-            "total_lots":
-                len(prices),
-        })
-
-    return result
-
-
-# ============================================================
-# SUPABASE
+# SAVE SUPABASE
 # ============================================================
 
 async def save_price_history(
@@ -1364,15 +1306,26 @@ async def save_price_history(
         "Артефакт"
     )
 
-    variant = str(
-        statistics.get(
-            "variant",
-            "0"
-        )
+    # --------------------------------------------------------
+    # ВАЖНО:
+    #
+    # Пока колонка в Supabase называется "variant",
+    # туда записываем PTN.
+    #
+    # Позже, если подтвердим соответствие,
+    # можно переименовать колонку в ptn.
+    # --------------------------------------------------------
+
+    ptn = statistics.get(
+        "ptn"
     )
 
-    buyout_price = int(
-        min_buyout_price
+    if ptn is None:
+
+        ptn = 0
+
+    ptn = str(
+        ptn
     )
 
     payload = {
@@ -1396,10 +1349,10 @@ async def save_price_history(
             category,
 
         "variant":
-            variant,
+            ptn,
 
         "buyout_price":
-            buyout_price,
+            min_buyout_price,
     }
 
     try:
@@ -1424,18 +1377,14 @@ async def save_price_history(
             "price_history | "
             "ID=%s | "
             "%s | "
-            "variant=%s | "
+            "ptn=%s | "
             "min=%d | "
             "lots=%d",
 
             item_id,
-
             rarity,
-
-            variant,
-
+            ptn,
             min_buyout_price,
-
             total_lots
         )
 
@@ -1450,7 +1399,6 @@ async def save_price_history(
             "error=%s",
 
             payload,
-
             e
         )
 
@@ -1514,11 +1462,6 @@ async def monitor_snipers(
 
                 continue
 
-            # ------------------------------------------------
-            # SUPABASE SNIPER НЕ ЯВЛЯЕТСЯ
-            # ИСТОЧНИКОМ СПИСКА ПРЕДМЕТОВ
-            # ------------------------------------------------
-
             if not local_db.get_item(
                 item_id
             ):
@@ -1561,7 +1504,41 @@ async def collector_loop(
         len(items)
     )
 
+    # --------------------------------------------------------
+    # Для диагностики выводим несколько предметов,
+    # у которых есть _variants.
+    # --------------------------------------------------------
+
+    debug_count = 0
+
+    for item in items:
+
+        item_id = item["id"]
+
+        variants = (
+            local_db.get_variants(
+                item_id
+            )
+        )
+
+        if variants:
+
+            local_db.log_item_variants(
+                item_id
+            )
+
+            debug_count += 1
+
+            if debug_count >= 10:
+
+                break
+
     first_lot_logged = False
+
+    # Чтобы не заспамить Railway логами,
+    # PTN CHECK для каждого item выводим максимум
+    # несколько раз за цикл.
+    ptn_debug_count = 0
 
     while True:
 
@@ -1574,12 +1551,13 @@ async def collector_loop(
         )
 
         successful_items = 0
-
         saved_rows = 0
 
+        ptn_debug_count = 0
+
         # ----------------------------------------------------
-        # ИСТОЧНИК СПИСКА:
-        # ТОЛЬКО LOCAL DATABASE
+        # ИСТОЧНИК ПРЕДМЕТОВ:
+        # ТОЛЬКО ОФИЦИАЛЬНАЯ LOCAL DATABASE
         # ----------------------------------------------------
 
         for item in items:
@@ -1646,15 +1624,46 @@ async def collector_loop(
                 )
 
                 # ------------------------------------------------
+                # ВАЖНО:
+                # Показываем официальные _variants
+                # для предмета, если они есть.
+                # ------------------------------------------------
+
+                if (
+                    ptn_debug_count < 20
+                    and local_db.get_variants(
+                        item_id
+                    )
+                ):
+
+                    local_db.log_item_variants(
+                        item_id
+                    )
+
+                # ------------------------------------------------
                 # GROUPS
                 #
-                # (rarity, variant)
+                # Группируем:
+                #
+                # (rarity, PTN)
+                #
                 # ------------------------------------------------
 
                 groups: Dict[
                     Tuple[str, str],
                     List[float]
                 ] = {}
+
+                # Сколько раз встретился каждый PTN
+                # в этом ответе API.
+                ptn_seen: Dict[
+                    int,
+                    int
+                ] = {}
+
+                # ------------------------------------------------
+                # ЛОТЫ
+                # ------------------------------------------------
 
                 for lot in lots:
 
@@ -1675,6 +1684,37 @@ async def collector_loop(
 
                         continue
 
+                    qlt = get_qlt(
+                        lot
+                    )
+
+                    ptn = get_ptn(
+                        lot
+                    )
+
+                    # ------------------------------------------------
+                    # PTN ДИАГНОСТИКА
+                    # ------------------------------------------------
+
+                    if ptn is not None:
+
+                        ptn_seen[ptn] = (
+                            ptn_seen.get(
+                                ptn,
+                                0
+                            ) + 1
+                        )
+
+                        if ptn_debug_count < 20:
+
+                            debug_ptn_mapping(
+                                item,
+                                lot,
+                                local_db
+                            )
+
+                            ptn_debug_count += 1
+
                     rarity = (
                         get_lot_rarity(
                             lot,
@@ -1686,16 +1726,30 @@ async def collector_loop(
 
                         rarity = "Обычный"
 
-                    variant = (
-                        get_lot_variant(
-                            lot,
-                            item
+                    # ------------------------------------------------
+                    # PTN
+                    #
+                    # Если API не передал PTN,
+                    # используем специальное значение "unknown".
+                    #
+                    # НЕ подставляем локальный _variants,
+                    # потому что сейчас как раз проверяем,
+                    # соответствует ли PTN _variants.
+                    # ------------------------------------------------
+
+                    if ptn is None:
+
+                        ptn_key = "unknown"
+
+                    else:
+
+                        ptn_key = str(
+                            ptn
                         )
-                    )
 
                     group_key = (
                         rarity,
-                        variant
+                        ptn_key
                     )
 
                     if group_key not in groups:
@@ -1711,6 +1765,50 @@ async def collector_loop(
                     )
 
                 # ------------------------------------------------
+                # PTN SUMMARY
+                # ------------------------------------------------
+
+                if ptn_seen:
+
+                    ptn_parts = []
+
+                    for ptn_value, count in sorted(
+                        ptn_seen.items()
+                    ):
+
+                        has_local_variant = (
+                            local_db.has_variant(
+                                item_id,
+                                ptn_value
+                            )
+                        )
+
+                        if has_local_variant:
+
+                            marker = "MATCH"
+
+                        else:
+
+                            marker = "NO_LOCAL"
+
+                        ptn_parts.append(
+                            f"{ptn_value}"
+                            f"={count}"
+                            f"[{marker}]"
+                        )
+
+                    logger.info(
+                        "PTN SUMMARY | "
+                        "ID=%s | %s",
+
+                        item_id,
+
+                        " | ".join(
+                            ptn_parts
+                        )
+                    )
+
+                # ------------------------------------------------
                 # SAVE
                 # ------------------------------------------------
 
@@ -1718,7 +1816,7 @@ async def collector_loop(
 
                 for (
                     rarity,
-                    variant
+                    ptn
                 ), prices in sorted(
                     groups.items(),
                     key=lambda x: (
@@ -1759,8 +1857,8 @@ async def collector_loop(
                         "category":
                             "Артефакт",
 
-                        "variant":
-                            variant,
+                        "ptn":
+                            ptn,
 
                         "min_buyout_price":
                             min_price,
@@ -1787,7 +1885,7 @@ async def collector_loop(
 
                     for (
                         rarity,
-                        variant
+                        ptn
                     ), prices in sorted(
                         groups.items(),
                         key=lambda x: (
@@ -1810,7 +1908,7 @@ async def collector_loop(
 
                         log_parts.append(
                             f"{rarity}"
-                            f"[v{variant}]"
+                            f"[ptn={ptn}]"
                             f"="
                             f"{int(prices[0])}"
                             f"/"
@@ -1836,7 +1934,6 @@ async def collector_loop(
                         "нет лотов с buyout",
 
                         item_id,
-
                         item_name
                     )
 
@@ -1847,7 +1944,6 @@ async def collector_loop(
                     "ID=%s: %s",
 
                     item_id,
-
                     e
                 )
 
@@ -1883,7 +1979,6 @@ async def collector_loop(
             "%d/%d",
 
             successful_items,
-
             len(items)
         )
 
@@ -1899,14 +1994,8 @@ async def collector_loop(
             cycle_time
         )
 
-        # --------------------------------------------------------
-        # WAIT
-        # --------------------------------------------------------
-
         sleep_time = max(
-
             0,
-
             COLLECT_INTERVAL
             - cycle_time
         )
