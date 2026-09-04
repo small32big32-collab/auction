@@ -14,35 +14,15 @@ from supabase import create_client, Client
 # CONFIG
 # ============================================================
 
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL",
-    "https://mdursbqpogprwzbhjzxz.supabase.co",
-)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo")
 
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo",
-)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
 
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE",
-)
+STALCRAFT_CLIENT_ID = os.getenv("STALCRAFT_CLIENT_ID", "3919")
+STALCRAFT_CLIENT_SECRET = os.getenv("STALCRAFT_CLIENT_SECRET", "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl")
 
-STALCRAFT_CLIENT_ID = os.getenv(
-    "STALCRAFT_CLIENT_ID",
-    "3919",
-)
-
-STALCRAFT_CLIENT_SECRET = os.getenv(
-    "STALCRAFT_CLIENT_SECRET",
-    "ayazYFVWHuFnpWBvOAYWWvEDykdntMOgDNNppKTl",
-)
-
-STALCRAFT_REGION = os.getenv(
-    "STALCRAFT_REGION",
-    "ru",
-)
+STALCRAFT_REGION = os.getenv("STALCRAFT_REGION", "ru")
 
 AUCTION_API_URL = (
     f"https://eapi.stalcraft.net/{STALCRAFT_REGION}/auction"
@@ -60,6 +40,9 @@ SNIPER_INTERVAL = 10
 SNIPER_COOLDOWN = 300
 
 MAX_CONCURRENT_REQUESTS = 3
+
+# Если цена лота отсутствует или равна 0
+DEFAULT_AUCTION_PRICE = 150000
 
 
 # ============================================================
@@ -84,6 +67,26 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# CONFIG VALIDATION
+# ============================================================
+
+if not SUPABASE_URL:
+    logger.warning("SUPABASE_URL не установлен")
+
+if not SUPABASE_KEY:
+    logger.warning("SUPABASE_KEY не установлен")
+
+if not BOT_TOKEN:
+    logger.warning("BOT_TOKEN не установлен")
+
+if not STALCRAFT_CLIENT_ID:
+    logger.warning("STALCRAFT_CLIENT_ID не установлен")
+
+if not STALCRAFT_CLIENT_SECRET:
+    logger.warning("STALCRAFT_CLIENT_SECRET не установлен")
 
 
 # ============================================================
@@ -148,11 +151,8 @@ def normalize_rarity(
         return None
 
     if isinstance(value, (int, float)):
-
         try:
-            return RARITY_BY_NUMBER.get(
-                int(value)
-            )
+            return RARITY_BY_NUMBER.get(int(value))
         except Exception:
             return None
 
@@ -162,13 +162,9 @@ def normalize_rarity(
         return None
 
     if value.isdigit():
-        return RARITY_BY_NUMBER.get(
-            int(value)
-        )
+        return RARITY_BY_NUMBER.get(int(value))
 
-    return RARITY_NAMES.get(
-        value.lower()
-    )
+    return RARITY_NAMES.get(value.lower())
 
 
 # ============================================================
@@ -181,9 +177,7 @@ class LocalItemDatabase:
         self,
         base_dir: Path,
     ):
-
         self.base_dir = base_dir
-
         self.items_by_id: dict[str, dict] = {}
 
         self._load()
@@ -201,9 +195,7 @@ class LocalItemDatabase:
 
         loaded = 0
 
-        for file_path in self.base_dir.rglob(
-            "*.json"
-        ):
+        for file_path in self.base_dir.rglob("*.json"):
 
             try:
 
@@ -215,10 +207,7 @@ class LocalItemDatabase:
 
                     data = json.load(file)
 
-                if not isinstance(
-                    data,
-                    dict,
-                ):
+                if not isinstance(data, dict):
                     continue
 
                 item_id = data.get("id")
@@ -226,30 +215,20 @@ class LocalItemDatabase:
                 if not item_id:
                     continue
 
-                item_id = str(
-                    item_id
-                ).strip()
+                item_id = str(item_id).strip()
 
-                name_data = data.get(
-                    "name"
-                )
+                name_data = data.get("name")
 
                 ru_name = ""
 
-                if isinstance(
-                    name_data,
-                    dict,
-                ):
+                if isinstance(name_data, dict):
 
                     lines = name_data.get(
                         "lines",
                         {},
                     )
 
-                    if isinstance(
-                        lines,
-                        dict,
-                    ):
+                    if isinstance(lines, dict):
 
                         ru_name = (
                             lines.get("ru")
@@ -257,22 +236,12 @@ class LocalItemDatabase:
                             or ""
                         )
 
-                self.items_by_id[
-                    item_id
-                ] = {
+                self.items_by_id[item_id] = {
                     "id": item_id,
-                    "name": str(
-                        ru_name
-                    ).strip(),
-                    "category": data.get(
-                        "category"
-                    ),
-                    "color": data.get(
-                        "color"
-                    ),
-                    "file": str(
-                        file_path
-                    ),
+                    "name": str(ru_name).strip(),
+                    "category": data.get("category"),
+                    "color": data.get("color"),
+                    "file": str(file_path),
                 }
 
                 loaded += 1
@@ -309,75 +278,16 @@ local_database = LocalItemDatabase(
 
 
 # ============================================================
-# ITEM ID VALIDATION
+# AUCTION ID CACHE
 # ============================================================
 
-# ID, которые существуют в локальной базе.
-_local_valid_ids: set[str] = set()
+# Только информационные кэши.
+#
+# ВАЖНО:
+# локальная база больше НЕ запрещает запрос к Auction API.
 
-# ID, которых нет в локальной базе.
-_local_invalid_ids: set[str] = set()
-
-# ID, которые Auction API признал невалидными.
 _auction_invalid_ids: set[str] = set()
-
-# ID, которые Auction API уже подтвердил.
 _auction_valid_ids: set[str] = set()
-
-
-def validate_local_item_id(
-    item_id: Any,
-) -> bool:
-
-    """
-    Проверяет, существует ли ID в локальной
-    базе stalzone-database.
-
-    ВАЖНО:
-    Здесь НЕ происходит поиск по названию
-    и НЕ происходит подбор другого ID.
-    """
-
-    if item_id is None:
-        return False
-
-    item_id = str(
-        item_id
-    ).strip()
-
-    if not item_id:
-        return False
-
-    if item_id in _local_valid_ids:
-        return True
-
-    if item_id in _local_invalid_ids:
-        return False
-
-    local_item = (
-        local_database.get_by_id(
-            item_id
-        )
-    )
-
-    if local_item:
-
-        _local_valid_ids.add(
-            item_id
-        )
-
-        return True
-
-    _local_invalid_ids.add(
-        item_id
-    )
-
-    logger.info(
-        "ID %s отсутствует в локальной базе — пропускаем.",
-        item_id,
-    )
-
-    return False
 
 
 # ============================================================
@@ -401,10 +311,8 @@ async def get_access_token() -> str:
 
         if (
             _access_token
-            and now
-            < _access_token_expires_at - 30
+            and now < _access_token_expires_at - 30
         ):
-
             return _access_token
 
         payload = {
@@ -426,9 +334,7 @@ async def get_access_token() -> str:
 
             data = response.json()
 
-        _access_token = data[
-            "access_token"
-        ]
+        _access_token = data["access_token"]
 
         expires_in = int(
             data.get(
@@ -438,8 +344,7 @@ async def get_access_token() -> str:
         )
 
         _access_token_expires_at = (
-            time.time()
-            + expires_in
+            time.time() + expires_in
         )
 
         logger.info(
@@ -468,9 +373,7 @@ def _get_cached_lots(
     item_id: str,
 ) -> Optional[list[dict]]:
 
-    cached = _lots_cache.get(
-        item_id
-    )
+    cached = _lots_cache.get(item_id)
 
     if not cached:
         return None
@@ -516,34 +419,27 @@ async def fetch_auction_lots(
     global _access_token
     global _access_token_expires_at
 
-    item_id = str(
-        item_id
-    ).strip()
+    item_id = str(item_id).strip()
 
     if not item_id:
         return []
 
     # --------------------------------------------------------
-    # Сначала проверяем локальную базу.
-    # --------------------------------------------------------
-
-    if not validate_local_item_id(
-        item_id
-    ):
-
-        return []
-
-    # --------------------------------------------------------
-    # Если API уже признал ID невалидным,
-    # больше его не отправляем.
+    # ВАЖНО:
+    #
+    # НЕТ проверки локальной базы.
+    #
+    # Supabase item_id -> Auction API
+    #
+    # Именно Auction API определяет,
+    # существует ли данный ID.
     # --------------------------------------------------------
 
     if item_id in _auction_invalid_ids:
-
         return []
 
     # --------------------------------------------------------
-    # Используем кэш.
+    # CACHE
     # --------------------------------------------------------
 
     if not force_refresh:
@@ -570,15 +466,18 @@ async def fetch_auction_lots(
     }
 
     headers = {
-        "Authorization": (
-            f"Bearer {token}"
-        ),
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
 
     for attempt in range(4):
 
         try:
+
+            logger.debug(
+                "Запрос Auction API: %s",
+                url,
+            )
 
             async with httpx.AsyncClient(
                 timeout=20
@@ -591,7 +490,7 @@ async def fetch_auction_lots(
                 )
 
             # ------------------------------------------------
-            # Token expired
+            # TOKEN EXPIRED
             # ------------------------------------------------
 
             if response.status_code == 401:
@@ -599,20 +498,16 @@ async def fetch_auction_lots(
                 _access_token = None
                 _access_token_expires_at = 0
 
-                token = (
-                    await get_access_token()
-                )
+                token = await get_access_token()
 
-                headers[
-                    "Authorization"
-                ] = (
+                headers["Authorization"] = (
                     f"Bearer {token}"
                 )
 
                 continue
 
             # ------------------------------------------------
-            # Rate limit
+            # RATE LIMIT
             # ------------------------------------------------
 
             if response.status_code == 429:
@@ -635,7 +530,7 @@ async def fetch_auction_lots(
                 continue
 
             # ------------------------------------------------
-            # Server error
+            # SERVER ERROR
             # ------------------------------------------------
 
             if response.status_code >= 500:
@@ -660,40 +555,50 @@ async def fetch_auction_lots(
                 continue
 
             # ------------------------------------------------
-            # Invalid item ID
+            # INVALID ITEM ID
             # ------------------------------------------------
 
             if response.status_code == 400:
 
                 try:
-
-                    error_data = (
-                        response.json()
-                    )
-
+                    error_data = response.json()
                 except Exception:
-
                     error_data = {}
 
                 title = str(
                     error_data.get(
                         "title",
-                        ""
+                        "",
                     )
                 ).lower()
 
+                detail = str(
+                    error_data.get(
+                        "detail",
+                        "",
+                    )
+                ).lower()
+
+                error_text = (
+                    f"{title} {detail}"
+                )
+
                 if (
                     "invalid item id"
-                    in title
+                    in error_text
+                    or "item id"
+                    in error_text
+                    and "invalid"
+                    in error_text
                 ):
 
                     _auction_invalid_ids.add(
                         item_id
                     )
 
-                    logger.info(
+                    logger.warning(
                         "ID %s не существует "
-                        "в Auction API — пропускаем.",
+                        "в Auction API — запоминаем.",
                         item_id,
                     )
 
@@ -709,7 +614,23 @@ async def fetch_auction_lots(
                 return []
 
             # ------------------------------------------------
-            # Успешный ответ
+            # OTHER CLIENT ERRORS
+            # ------------------------------------------------
+
+            if response.status_code >= 400:
+
+                logger.warning(
+                    "Auction API вернул %s "
+                    "для %s: %s",
+                    response.status_code,
+                    item_id,
+                    response.text[:500],
+                )
+
+                return []
+
+            # ------------------------------------------------
+            # SUCCESS
             # ------------------------------------------------
 
             response.raise_for_status()
@@ -728,18 +649,12 @@ async def fetch_auction_lots(
                 dict,
             ):
 
-                lots = data.get(
-                    "lots"
-                )
+                lots = data.get("lots")
 
                 if lots is None:
-
-                    lots = data.get(
-                        "data"
-                    )
+                    lots = data.get("data")
 
                 if lots is None:
-
                     lots = []
 
             else:
@@ -812,7 +727,23 @@ async def fetch_auction_lots(
 
 def get_lot_buyout_price(
     lot: dict,
-) -> Optional[float]:
+) -> float:
+
+    """
+    Цена берётся ТОЛЬКО из самого лота.
+
+    Если цена:
+    - отсутствует;
+    - None;
+    - не число;
+    - равна 0;
+    - отрицательная;
+
+    используется DEFAULT_AUCTION_PRICE = 150000.
+
+    При этом сам лот должен реально существовать.
+    Никакая цена не создаётся для отсутствующего лота.
+    """
 
     possible_keys = (
         "buyoutPrice",
@@ -823,12 +754,10 @@ def get_lot_buyout_price(
 
     for key in possible_keys:
 
-        value = lot.get(
-            key
-        )
-
-        if value is None:
+        if key not in lot:
             continue
+
+        value = lot.get(key)
 
         if isinstance(
             value,
@@ -837,19 +766,27 @@ def get_lot_buyout_price(
 
             value = (
                 value.get("amount")
-                or value.get("value")
-                or value.get("price")
+                if value.get("amount") is not None
+                else value.get("value")
             )
+
+            if value is None:
+                value = value.get("price") if isinstance(value, dict) else None
+
+        if value is None:
+            continue
 
         try:
 
-            price = float(
-                value
-            )
+            price = float(value)
 
             if price > 0:
-
                 return price
+
+            # 0 или отрицательная цена
+            return float(
+                DEFAULT_AUCTION_PRICE
+            )
 
         except (
             TypeError,
@@ -858,7 +795,9 @@ def get_lot_buyout_price(
 
             continue
 
-    return None
+    return float(
+        DEFAULT_AUCTION_PRICE
+    )
 
 
 # ============================================================
@@ -913,10 +852,8 @@ def find_rarity_recursive(
                 or compact_key in RARITY_KEYS
             ):
 
-                rarity = (
-                    normalize_rarity(
-                        value
-                    )
+                rarity = normalize_rarity(
+                    value
                 )
 
                 if rarity:
@@ -924,11 +861,9 @@ def find_rarity_recursive(
 
         for value in obj.values():
 
-            result = (
-                find_rarity_recursive(
-                    value,
-                    depth + 1,
-                )
+            result = find_rarity_recursive(
+                value,
+                depth + 1,
             )
 
             if result:
@@ -941,11 +876,9 @@ def find_rarity_recursive(
 
         for item in obj:
 
-            result = (
-                find_rarity_recursive(
-                    item,
-                    depth + 1,
-                )
+            result = find_rarity_recursive(
+                item,
+                depth + 1,
             )
 
             if result:
@@ -958,10 +891,8 @@ def get_lot_rarity(
     lot: dict,
 ) -> Optional[str]:
 
-    rarity = (
-        find_rarity_recursive(
-            lot
-        )
+    rarity = find_rarity_recursive(
+        lot
     )
 
     if rarity:
@@ -973,10 +904,8 @@ def get_lot_rarity(
 
     if additional:
 
-        rarity = (
-            find_rarity_recursive(
-                additional
-            )
+        rarity = find_rarity_recursive(
+            additional
         )
 
         if rarity:
@@ -1003,23 +932,16 @@ def collect_rarity_prices(
         ):
             continue
 
-        price = (
-            get_lot_buyout_price(
-                lot
-            )
-        )
-
-        if price is None:
-            continue
-
-        rarity = (
-            get_lot_rarity(
-                lot
-            )
+        rarity = get_lot_rarity(
+            lot
         )
 
         if not rarity:
             continue
+
+        price = get_lot_buyout_price(
+            lot
+        )
 
         old_price = result.get(
             rarity
@@ -1051,15 +973,11 @@ async def fetch_auction_price(
     if not lots:
         return None
 
-    target_rarity = (
-        normalize_rarity(
-            rarity
-        )
+    target_rarity = normalize_rarity(
+        rarity
     )
 
-    min_price: Optional[
-        float
-    ] = None
+    min_price: Optional[float] = None
 
     for lot in lots:
 
@@ -1069,32 +987,22 @@ async def fetch_auction_price(
         ):
             continue
 
-        price = (
-            get_lot_buyout_price(
-                lot
-            )
-        )
-
-        if price is None:
-            continue
-
-        lot_rarity = (
-            get_lot_rarity(
-                lot
-            )
+        lot_rarity = get_lot_rarity(
+            lot
         )
 
         if target_rarity:
 
-            if (
-                lot_rarity
-                != target_rarity
-            ):
+            if lot_rarity != target_rarity:
                 continue
 
         elif not lot_rarity:
 
             continue
+
+        price = get_lot_buyout_price(
+            lot
+        )
 
         if (
             min_price is None
@@ -1184,7 +1092,6 @@ async def send_telegram_message(
             )
 
         if response.is_success:
-
             return True
 
         logger.warning(
@@ -1224,9 +1131,7 @@ async def save_price(
                 "name",
                 "Unknown",
             ),
-            "price": float(
-                price
-            ),
+            "price": float(price),
             "rarity": rarity,
         }
 
@@ -1257,31 +1162,25 @@ async def collect_item(
     item_id = str(
         item.get(
             "item_id",
-            ""
+            "",
         )
     ).strip()
 
     item_name = (
-        item.get(
-            "name"
-        )
+        item.get("name")
         or item_id
     )
 
     if not item_id:
-
         return
 
     # --------------------------------------------------------
-    # Только ID из Supabase.
-    # Никакого поиска по названию.
+    # ВАЖНО:
+    #
+    # Больше НЕТ проверки local_database.
+    #
+    # ID из Supabase напрямую идёт в Auction API.
     # --------------------------------------------------------
-
-    if not validate_local_item_id(
-        item_id
-    ):
-
-        return
 
     lots = await fetch_auction_lots(
         item_id,
@@ -1299,10 +1198,8 @@ async def collect_item(
 
         return
 
-    rarity_prices = (
-        collect_rarity_prices(
-            lots
-        )
+    rarity_prices = collect_rarity_prices(
+        lots
     )
 
     if not rarity_prices:
@@ -1316,9 +1213,7 @@ async def collect_item(
 
         return
 
-    for rarity, price in (
-        rarity_prices.items()
-    ):
+    for rarity, price in rarity_prices.items():
 
         await save_price(
             item,
@@ -1327,11 +1222,11 @@ async def collect_item(
         )
 
         logger.info(
-            "%s | ID=%s | %s | %s",
+            "%s | ID=%s | %s | %s поинтов",
             item_name,
             item_id,
             rarity,
-            price,
+            f"{price:,.0f}",
         )
 
 
@@ -1341,9 +1236,7 @@ async def collect_item(
 
 async def sync_all_items_to_supabase() -> None:
 
-    items = (
-        await load_tracked_items()
-    )
+    items = await load_tracked_items()
 
     if not items:
 
@@ -1373,9 +1266,7 @@ async def sync_all_items_to_supabase() -> None:
 
                 logger.exception(
                     "Ошибка обработки item %s: %s",
-                    item.get(
-                        "item_id"
-                    ),
+                    item.get("item_id"),
                     exc,
                 )
 
@@ -1401,6 +1292,7 @@ async def load_snipers() -> list[dict]:
 
     """
     В таблице user_snipers нет поля enabled.
+    Поэтому используется select("*").
     """
 
     try:
@@ -1436,42 +1328,22 @@ async def load_snipers() -> list[dict]:
 
 async def monitor_snipers() -> None:
 
-    snipers = (
-        await load_snipers()
-    )
+    snipers = await load_snipers()
 
     if not snipers:
         return
-
-    # --------------------------------------------------------
-    # Для снайперов используем только их item_id.
-    # --------------------------------------------------------
 
     semaphore = asyncio.Semaphore(
         MAX_CONCURRENT_REQUESTS
     )
 
-    checked_ids: dict[
-        str,
-        bool,
-    ] = {}
+    # --------------------------------------------------------
+    # Собираем уникальные item_id.
+    #
+    # НИКАКОЙ локальной проверки.
+    # --------------------------------------------------------
 
-    async def validate_sniper_id(
-        item_id: str,
-    ):
-
-        async with semaphore:
-
-            if item_id in checked_ids:
-                return
-
-            checked_ids[
-                item_id
-            ] = validate_local_item_id(
-                item_id
-            )
-
-    unique_ids = set()
+    unique_ids: set[str] = set()
 
     for sniper in snipers:
 
@@ -1482,19 +1354,44 @@ async def monitor_snipers() -> None:
         if item_id:
 
             unique_ids.add(
-                str(
-                    item_id
-                ).strip()
+                str(item_id).strip()
             )
+
+    # --------------------------------------------------------
+    # Предварительно проверяем Auction API
+    # для каждого уникального ID.
+    # --------------------------------------------------------
+
+    async def check_id(
+        item_id: str,
+    ):
+
+        async with semaphore:
+
+            try:
+
+                await fetch_auction_lots(
+                    item_id
+                )
+
+            except Exception as exc:
+
+                logger.exception(
+                    "Ошибка проверки sniper ID %s: %s",
+                    item_id,
+                    exc,
+                )
 
     await asyncio.gather(
         *(
-            validate_sniper_id(
-                item_id
-            )
+            check_id(item_id)
             for item_id in unique_ids
         )
     )
+
+    # --------------------------------------------------------
+    # Обрабатываем каждого снайпера.
+    # --------------------------------------------------------
 
     for sniper in snipers:
 
@@ -1514,38 +1411,21 @@ async def monitor_snipers() -> None:
         ).strip()
 
         # ----------------------------------------------------
-        # ID должен существовать в локальной базе.
-        # ----------------------------------------------------
-
-        if not checked_ids.get(
-            item_id,
-            False,
-        ):
-
-            continue
-
-        # ----------------------------------------------------
-        # Если Auction API уже признал ID невалидным,
+        # Если Auction API уже признал ID невалидным —
         # пропускаем.
         # ----------------------------------------------------
 
         if item_id in _auction_invalid_ids:
-
             continue
 
         item_name = (
-            sniper.get(
-                "item_name"
-            )
+            sniper.get("item_name")
+            or sniper.get("name")
             or item_id
         )
 
-        rarity = (
-            normalize_rarity(
-                sniper.get(
-                    "rarity"
-                )
-            )
+        rarity = normalize_rarity(
+            sniper.get("rarity")
         )
 
         if not rarity:
@@ -1558,6 +1438,10 @@ async def monitor_snipers() -> None:
             )
 
             continue
+
+        # ----------------------------------------------------
+        # THRESHOLD
+        # ----------------------------------------------------
 
         try:
 
@@ -1580,23 +1464,42 @@ async def monitor_snipers() -> None:
 
             continue
 
-        current_price = (
-            await fetch_auction_price(
-                item_id,
-                rarity,
-            )
-        )
+        # ----------------------------------------------------
+        # CURRENT AUCTION PRICE
+        # ----------------------------------------------------
 
-        if current_price is None:
+        try:
+
+            current_price = (
+                await fetch_auction_price(
+                    item_id,
+                    rarity,
+                )
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Ошибка получения цены "
+                "для sniper %s: %s",
+                sniper_id,
+                exc,
+            )
 
             continue
 
-        if current_price > threshold:
-
+        if current_price is None:
             continue
 
         # ----------------------------------------------------
-        # Cooldown
+        # PRICE CHECK
+        # ----------------------------------------------------
+
+        if current_price > threshold:
+            continue
+
+        # ----------------------------------------------------
+        # COOLDOWN
         # ----------------------------------------------------
 
         if sniper_id is not None:
@@ -1613,9 +1516,7 @@ async def monitor_snipers() -> None:
             ):
 
                 sniper_key = hash(
-                    str(
-                        sniper_id
-                    )
+                    str(sniper_id)
                 )
 
             last_alert = (
@@ -1638,7 +1539,7 @@ async def monitor_snipers() -> None:
             sniper_key = None
 
         # ----------------------------------------------------
-        # Telegram
+        # TELEGRAM ID
         # ----------------------------------------------------
 
         telegram_id = (
@@ -1651,24 +1552,26 @@ async def monitor_snipers() -> None:
         )
 
         if not telegram_id:
-
             continue
+
+        # ----------------------------------------------------
+        # TELEGRAM MESSAGE
+        # ----------------------------------------------------
 
         text = (
             "🎯 НАЙДЕН ЛОТ!\n\n"
             f"📦 {item_name}\n"
+            f"🆔 ID: {item_id}\n"
             f"⭐ Редкость: {rarity}\n"
             f"💰 Цена: "
-            f"{current_price:,.0f} ₽\n"
+            f"{current_price:,.0f} поинтов\n"
             f"🎯 Ваш порог: "
-            f"{threshold:,.0f} ₽"
+            f"{threshold:,.0f} поинтов"
         )
 
-        sent = (
-            await send_telegram_message(
-                telegram_id,
-                text,
-            )
+        sent = await send_telegram_message(
+            telegram_id,
+            text,
         )
 
         if (
@@ -1682,11 +1585,11 @@ async def monitor_snipers() -> None:
 
             logger.info(
                 "Снайпер сработал: "
-                "%s | ID=%s | %s | %s",
+                "%s | ID=%s | %s | %s поинтов",
                 item_name,
                 item_id,
                 rarity,
-                current_price,
+                f"{current_price:,.0f}",
             )
 
 
@@ -1716,14 +1619,12 @@ async def collector_loop() -> None:
             )
 
         elapsed = (
-            time.time()
-            - started
+            time.time() - started
         )
 
         sleep_time = max(
             1,
-            COLLECT_INTERVAL
-            - elapsed,
+            COLLECT_INTERVAL - elapsed,
         )
 
         await asyncio.sleep(
@@ -1753,14 +1654,12 @@ async def sniper_loop() -> None:
             )
 
         elapsed = (
-            time.time()
-            - started
+            time.time() - started
         )
 
         sleep_time = max(
             1,
-            SNIPER_INTERVAL
-            - elapsed,
+            SNIPER_INTERVAL - elapsed,
         )
 
         await asyncio.sleep(
