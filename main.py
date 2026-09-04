@@ -1,4 +1,3 @@
-```python
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -1345,4 +1344,4 @@ if __name__ == "__main__":
         ),
         reload=False
     )
-```
+
