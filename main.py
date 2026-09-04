@@ -1,18 +1,30 @@
 import os
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import create_client
 
 # 1. Инициализация Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mdursbqpogprwzbhjzxz.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kdXJzYnFwb2dwcnd6Ymhqenh6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE0MzU5NCwiZXhwIjoyMTAyNzE5NTk0fQ.AXb2IUi3VOY1hNHxrvZUpsk4f6ycGDc2qaC_4zzM1Mo")
+# ВАЖНО: значений по умолчанию больше нет — старые ключи были скомпрометированы
+# (лежали в открытом коде), их нужно РОТИРОВАТЬ в Supabase/Telegram и задать заново
+# только через переменные окружения Railway.
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError(
+        "SUPABASE_URL и SUPABASE_KEY должны быть заданы через переменные окружения "
+        "(Railway → Variables). Хардкод секретов в коде убран из соображений безопасности."
+    )
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 2. Глобальное объявление приложения (СТРОГО на верхнем уровне файла!)
 app = FastAPI(title="Stalzone Auction API")
+
+DEFAULT_LICENSE_DAYS = int(os.getenv("DEFAULT_LICENSE_DAYS", "30"))
 
 
 # --- Схемы данных ---
@@ -28,42 +40,98 @@ class SniperCreate(BaseModel):
 class SniperUpdate(BaseModel):
     threshold: float
 
+class LicenseGenerate(BaseModel):
+    telegram_id: int
+    days: Optional[int] = None
 
-# --- Проверка лицензии ---
 
-def verify_license_key(license_key: str) -> bool:
+# --- Проверка и привязка лицензии ---
+#
+# ВАЖНО: раньше здесь был универсальный ключ "STALZONE-STARS-KEY-DEMO", который
+# всегда считался валидным для ЛЮБОГО пользователя и никогда не истекал — по сути,
+# бесплатный доступ для всех, кто его узнал. Он убран. Каждый ключ теперь уникален
+# и выдаётся через /licenses/generate (см. ниже).
+
+def verify_license_key(license_key: str, telegram_id: Optional[int] = None) -> str:
+    """
+    Возвращает:
+      "ok"          - ключ валиден (и привязан к telegram_id, если он передан)
+      "invalid"     - ключ не найден, деактивирован или просрочен
+      "bound_other" - ключ уже привязан к другому Telegram-аккаунту
+    """
     if not license_key:
-        return False
+        return "invalid"
     clean_key = license_key.strip()
-    
-    if clean_key == "STALZONE-STARS-KEY-DEMO":
-        return True
-        
+
     try:
         res = (
             supabase.table("licenses")
-            .select("is_active, expires_at")
+            .select("id, is_active, expires_at, telegram_id")
             .eq("key", clean_key)
             .execute()
         )
-        
-        if res.data and len(res.data) > 0:
-            row = res.data[0]
-            if not row.get("is_active"):
-                return False
-            
-            expires_at_str = row.get("expires_at")
-            if expires_at_str:
-                expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
-                if datetime.now(timezone.utc) > expires_at:
-                    return False
-                    
-            return True
-            
-        return False
     except Exception as e:
         print(f"⚠️ Ошибка проверки ключа: {e}")
-        return False
+        return "invalid"
+
+    if not res.data:
+        return "invalid"
+
+    row = res.data[0]
+    if not row.get("is_active"):
+        return "invalid"
+
+    expires_at_str = row.get("expires_at")
+    if expires_at_str:
+        expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires_at:
+            return "invalid"
+
+    if telegram_id is None:
+        # Привязка не требуется для этого вызова — достаточно, что ключ валиден.
+        return "ok"
+
+    bound_id = row.get("telegram_id")
+
+    if bound_id is None:
+        # Ключ ещё никому не принадлежит — привязываем к текущему аккаунту при первом входе.
+        try:
+            supabase.table("licenses").update({"telegram_id": telegram_id}).eq("id", row["id"]).execute()
+        except Exception as e:
+            print(f"⚠️ Ошибка привязки ключа к telegram_id={telegram_id}: {e}")
+            return "invalid"
+        return "ok"
+
+    if int(bound_id) != int(telegram_id):
+        return "bound_other"
+
+    return "ok"
+
+
+def _require_license(license_key: str, telegram_id: Optional[int] = None):
+    """Поднимает корректную HTTPException в зависимости от результата проверки."""
+    status = verify_license_key(license_key, telegram_id)
+    if status == "bound_other":
+        raise HTTPException(status_code=409, detail="Этот ключ уже привязан к другому Telegram-аккаунту.")
+    if status != "ok":
+        raise HTTPException(status_code=403, detail="Неверный или просроченный ключ.")
+
+
+def _fetch_all_rows(table: str, columns: str, page_size: int = 1000) -> list:
+    """
+    Пагинированная выгрузка ВСЕХ строк таблицы (а не только первых ~10000),
+    чтобы каталог не обрезался молча при росте базы.
+    """
+    rows: list = []
+    start = 0
+    while True:
+        res = supabase.table(table).select(columns).range(start, start + page_size - 1).execute()
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        start += page_size
+    return rows
 
 
 # --- Корневой роут для проверки работоспособности Railway ---
@@ -73,26 +141,52 @@ def read_root():
     return {"status": "ok", "message": "Stalzone Auction API Running"}
 
 
+# --- Выдача лицензий (вызывается ботом после подтверждённой оплаты) ---
+
+@app.post("/licenses/generate")
+@app.post("/api/v1/licenses/generate")
+def generate_license(data: LicenseGenerate):
+    """
+    Создаёт новый уникальный ключ, сразу привязанный к telegram_id покупателя.
+    Заменяет прежний общий демо-ключ, который был доступен всем бесплатно.
+    """
+    days = data.days or DEFAULT_LICENSE_DAYS
+    new_key = f"STZ-{secrets.token_hex(8).upper()}"
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+    payload = {
+        "key": new_key,
+        "is_active": True,
+        "expires_at": expires_at,
+        "telegram_id": data.telegram_id,
+    }
+    try:
+        supabase.table("licenses").insert(payload).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка создания ключа: {e}")
+
+    return {"status": "success", "key": new_key, "expires_at": expires_at}
+
+
 # --- Эндпоинты для товаров и цен ---
 
 @app.get("/items/{license_key}")
 @app.get("/api/v1/items/{license_key}")
 @app.get("/api/login/items/{license_key}")
 def get_items_by_key(license_key: str, telegram_id: Optional[int] = None, limit: Optional[int] = 10000):
-    if not verify_license_key(license_key):
-        raise HTTPException(status_code=403, detail="Неверный или просроченный ключ.")
+    _require_license(license_key, telegram_id)
 
     try:
-        res_items = supabase.table("items").select("*").range(0, 9999).execute()
-        if res_items.data and len(res_items.data) > 0:
-            return {"status": "success", "data": res_items.data}
+        res_items = _fetch_all_rows("items", "*")
+        if res_items:
+            return {"status": "success", "data": res_items}
     except Exception as e:
         print(f"⚠️ Ошибка обращения к таблице items: {e}")
 
     try:
-        items = supabase.table("price_history").select("item_id, item_name, rarity, category").range(0, 9999).execute()
+        rows = _fetch_all_rows("price_history", "item_id, item_name, rarity, category")
         unique_items = {}
-        for row in items.data:
+        for row in rows:
             i_id = row.get("item_id")
             rarity = row.get("rarity") or "Обычный"
             if rarity == "None":
