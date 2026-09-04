@@ -125,8 +125,8 @@ async def process_license_key(message: types.Message, state: FSMContext):
         try:
             res = await client.get(
                 f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
-                timeout=5.0
+                params={"telegram_id": user_id, "limit": 10000}, 
+                timeout=10.0
             )
             if res.status_code == 200:
                 user_sessions[user_id] = license_key
@@ -230,8 +230,8 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         try:
             res = await client.get(
                 f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
-                timeout=5.0
+                params={"telegram_id": user_id, "limit": 10000}, 
+                timeout=10.0
             )
             items = res.json().get("data", [])
         except Exception as e:
@@ -250,7 +250,7 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         i_id = item.get("item_id") or item.get("id")
         if i_id and i_id not in seen_ids:
             seen_ids.add(i_id)
-            unique_items.append((i_id, item.get("name", i_id)))
+            unique_items.append((i_id, item.get("name") or item.get("item_name") or i_id))
 
     total_items = len(unique_items)
     total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
@@ -294,7 +294,7 @@ async def select_item_info(callback: types.CallbackQuery):
         try:
             res = await client.get(
                 f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
+                params={"telegram_id": user_id, "limit": 10000}, 
                 timeout=5.0
             )
             items = res.json().get("data", [])
@@ -302,7 +302,7 @@ async def select_item_info(callback: types.CallbackQuery):
             for item in items:
                 raw_id = str(item.get("item_id") or item.get("id") or "").strip().lower()
                 if raw_id == target:
-                    item_name = item.get("name", item_id)
+                    item_name = item.get("name") or item.get("item_name") or item_id
                     break
         except Exception:
             pass
@@ -332,28 +332,41 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
 
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(
-                f"{API_BASE_URL}/items/{license_key}", 
-                params={"telegram_id": user_id}, 
+            # 1. Попытка запросить конкретную цену напрямую с сервера
+            res_price = await client.get(
+                f"{API_BASE_URL}/items/{item_id}/price",
+                params={"rarity": rarity, "license_key": license_key},
                 timeout=5.0
             )
-            if res.status_code == 200:
-                items = res.json().get("data", [])
-                target_id = str(item_id).strip().lower()
-                target_rarity = str(rarity).strip().lower()
+            if res_price.status_code == 200:
+                p_data = res_price.json()
+                min_price = p_data.get("min_price") or p_data.get("min_buyout_price")
+                item_name = p_data.get("item_name") or item_name
+            else:
+                # 2. Резервный поиск по всем объектам истории/предметов
+                res = await client.get(
+                    f"{API_BASE_URL}/items/{license_key}", 
+                    params={"telegram_id": user_id, "limit": 10000}, 
+                    timeout=5.0
+                )
+                if res.status_code == 200:
+                    items = res.json().get("data", [])
+                    target_id = str(item_id).strip().lower()
+                    target_rarity = str(rarity).strip().lower()
 
-                for item in items:
-                    raw_id = str(item.get("item_id") or item.get("id") or "").strip().lower()
-                    raw_rarity = str(item.get("rarity") or "").strip().lower()
+                    for item in items:
+                        raw_id = str(item.get("item_id") or item.get("id") or "").strip().lower()
+                        raw_rarity = str(item.get("rarity") or "").strip().lower()
 
-                    if raw_id == target_id:
-                        item_name = item.get("name", item_id)
-                        # Точный поиск цены с учетом редкости
-                        if raw_rarity == target_rarity:
-                            min_price = item.get("min_price") or item.get("price") or item.get("min_buyout_price")
-                            break
-                        elif min_price is None:
-                            min_price = item.get("min_price") or item.get("price") or item.get("min_buyout_price")
+                        if raw_id == target_id:
+                            item_name = item.get("name") or item.get("item_name") or item_name
+                            price_val = item.get("min_buyout_price") or item.get("min_price") or item.get("price")
+                            
+                            if raw_rarity == target_rarity and price_val is not None:
+                                min_price = price_val
+                                break
+                            elif min_price is None and price_val is not None:
+                                min_price = price_val
         except Exception as e:
             logging.error(f"Ошибка получения цен: {e}")
 
