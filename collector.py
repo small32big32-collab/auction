@@ -1,3 +1,4 @@
+```python
 import os
 import time
 import asyncio
@@ -153,7 +154,6 @@ def normalize_rarity(
             return RARITY_BY_NUMBER.get(
                 int(value)
             )
-
         except Exception:
             return None
 
@@ -177,16 +177,6 @@ def normalize_rarity(
 # ============================================================
 
 class LocalItemDatabase:
-    """
-    Локальная база предметов из:
-
-        stalzone-database/ru/items
-
-    Индексы:
-
-        id -> item
-        name -> список item
-    """
 
     def __init__(
         self,
@@ -196,29 +186,14 @@ class LocalItemDatabase:
         self.base_dir = base_dir
 
         self.items_by_id: dict[str, dict] = {}
-        self.items_by_name: dict[str, list[dict]] = {}
 
         self._load()
-
-    @staticmethod
-    def normalize_name(
-        name: Any,
-    ) -> str:
-
-        if name is None:
-            return ""
-
-        return (
-            str(name)
-            .strip()
-            .lower()
-        )
 
     def _load(self) -> None:
 
         if not self.base_dir.exists():
 
-            logger.error(
+            logger.warning(
                 "Локальная база предметов не найдена: %s",
                 self.base_dir,
             )
@@ -283,13 +258,13 @@ class LocalItemDatabase:
                             or ""
                         )
 
-                ru_name = str(
-                    ru_name
-                ).strip()
-
-                item = {
+                self.items_by_id[
+                    item_id
+                ] = {
                     "id": item_id,
-                    "name": ru_name,
+                    "name": str(
+                        ru_name
+                    ).strip(),
                     "category": data.get(
                         "category"
                     ),
@@ -301,31 +276,12 @@ class LocalItemDatabase:
                     ),
                 }
 
-                self.items_by_id[
-                    item_id
-                ] = item
-
-                if ru_name:
-
-                    name_key = (
-                        self.normalize_name(
-                            ru_name
-                        )
-                    )
-
-                    self.items_by_name.setdefault(
-                        name_key,
-                        [],
-                    ).append(
-                        item
-                    )
-
                 loaded += 1
 
             except Exception as exc:
 
                 logger.debug(
-                    "Не удалось прочитать %s: %s",
+                    "Ошибка чтения %s: %s",
                     file_path,
                     exc,
                 )
@@ -347,27 +303,6 @@ class LocalItemDatabase:
             str(item_id).strip()
         )
 
-    def find_by_name(
-        self,
-        name: Any,
-    ) -> list[dict]:
-
-        name_key = (
-            self.normalize_name(
-                name
-            )
-        )
-
-        if not name_key:
-            return []
-
-        return list(
-            self.items_by_name.get(
-                name_key,
-                [],
-            )
-        )
-
 
 local_database = LocalItemDatabase(
     DATABASE_PATH
@@ -375,150 +310,75 @@ local_database = LocalItemDatabase(
 
 
 # ============================================================
-# ITEM ID RESOLUTION
+# ITEM ID VALIDATION
 # ============================================================
 
-# Кэш:
-#
-# исходный ID -> проверенный ID
-#
-# None означает, что ID не найден.
-_resolved_item_ids: dict[
-    str,
-    Optional[str],
-] = {}
+# ID, которые существуют в локальной базе.
+_local_valid_ids: set[str] = set()
 
-# Невалидные ID API.
-#
-# Они больше не будут отправляться на API
-# каждые 10 секунд.
-_invalid_item_ids: set[str] = set()
+# ID, которых нет в локальной базе.
+_local_invalid_ids: set[str] = set()
 
-# Проверенные рабочие ID.
-_valid_item_ids: set[str] = set()
+# ID, которые Auction API признал невалидными.
+_auction_invalid_ids: set[str] = set()
+
+# ID, которые Auction API уже подтвердил.
+_auction_valid_ids: set[str] = set()
 
 
-def resolve_local_item_id(
-    item: dict,
-) -> Optional[str]:
+def validate_local_item_id(
+    item_id: Any,
+) -> bool:
 
     """
-    Получает правильный ID предмета
-    из локальной stalzone-database.
+    Проверяет, существует ли ID в локальной
+    базе stalzone-database.
 
-    Приоритет:
-
-    1. ID из Supabase, если он существует
-       в локальной базе.
-    2. Поиск по точному названию.
-    3. Старый ID как последний вариант.
+    ВАЖНО:
+    Здесь НЕ происходит поиск по названию
+    и НЕ происходит подбор другого ID.
     """
 
-    original_id = str(
-        item.get("item_id", "")
+    if item_id is None:
+        return False
+
+    item_id = str(
+        item_id
     ).strip()
 
-    item_name = (
-        item.get("name")
-        or item.get("item_name")
-        or ""
-    )
+    if not item_id:
+        return False
 
-    cache_key = (
-        original_id
-        or str(item_name)
-    )
+    if item_id in _local_valid_ids:
+        return True
 
-    if cache_key in _resolved_item_ids:
+    if item_id in _local_invalid_ids:
+        return False
 
-        return _resolved_item_ids[
-            cache_key
-        ]
-
-    # --------------------------------------------------------
-    # Сначала проверяем ID из Supabase
-    # --------------------------------------------------------
-
-    if original_id:
-
-        local_item = (
-            local_database.get_by_id(
-                original_id
-            )
-        )
-
-        if local_item:
-
-            _resolved_item_ids[
-                cache_key
-            ] = original_id
-
-            return original_id
-
-    # --------------------------------------------------------
-    # Затем ищем по точному названию
-    # --------------------------------------------------------
-
-    candidates = (
-        local_database.find_by_name(
-            item_name
+    local_item = (
+        local_database.get_by_id(
+            item_id
         )
     )
 
-    if candidates:
+    if local_item:
 
-        if len(candidates) == 1:
-
-            resolved_id = str(
-                candidates[0]["id"]
-            )
-
-            logger.info(
-                "ID предмета восстановлен "
-                "по названию: %s -> %s",
-                item_name,
-                resolved_id,
-            )
-
-            _resolved_item_ids[
-                cache_key
-            ] = resolved_id
-
-            return resolved_id
-
-        logger.warning(
-            "Для предмета '%s' найдено "
-            "%s вариантов ID.",
-            item_name,
-            len(candidates),
+        _local_valid_ids.add(
+            item_id
         )
 
-        # Первый кандидат пока является
-        # основным.
-        resolved_id = str(
-            candidates[0]["id"]
-        )
+        return True
 
-        _resolved_item_ids[
-            cache_key
-        ] = resolved_id
+    _local_invalid_ids.add(
+        item_id
+    )
 
-        return resolved_id
+    logger.info(
+        "ID %s отсутствует в локальной базе — пропускаем.",
+        item_id,
+    )
 
-    # --------------------------------------------------------
-    # Если локальная база не знает предмет,
-    # возвращаем исходный ID.
-    # --------------------------------------------------------
-
-    if original_id:
-
-        _resolved_item_ids[
-            cache_key
-        ] = original_id
-
-        return original_id
-
-    return None
+    return False
 
 
 # ============================================================
@@ -545,6 +405,7 @@ async def get_access_token() -> str:
             and now
             < _access_token_expires_at - 30
         ):
+
             return _access_token
 
         payload = {
@@ -598,7 +459,6 @@ _lots_cache: dict[
     tuple[float, list[dict]],
 ] = {}
 
-
 LOTS_CACHE_TTL = max(
     2,
     SNIPER_INTERVAL - 1,
@@ -645,7 +505,7 @@ def _set_cached_lots(
 
 
 # ============================================================
-# AUCTION REQUEST
+# AUCTION API
 # ============================================================
 
 async def fetch_auction_lots(
@@ -665,15 +525,26 @@ async def fetch_auction_lots(
         return []
 
     # --------------------------------------------------------
-    # Не отправляем заведомо невалидные ID
+    # Сначала проверяем локальную базу.
     # --------------------------------------------------------
 
-    if item_id in _invalid_item_ids:
+    if not validate_local_item_id(
+        item_id
+    ):
 
         return []
 
     # --------------------------------------------------------
-    # Кэш
+    # Если API уже признал ID невалидным,
+    # больше его не отправляем.
+    # --------------------------------------------------------
+
+    if item_id in _auction_invalid_ids:
+
+        return []
+
+    # --------------------------------------------------------
+    # Используем кэш.
     # --------------------------------------------------------
 
     if not force_refresh:
@@ -754,7 +625,7 @@ async def fetch_auction_lots(
 
                 logger.warning(
                     "STALCRAFT API rate limit. "
-                    "Ждём %s сек.",
+                    "Ожидание %s сек.",
                     wait_time,
                 )
 
@@ -796,10 +667,13 @@ async def fetch_auction_lots(
             if response.status_code == 400:
 
                 try:
+
                     error_data = (
                         response.json()
                     )
+
                 except Exception:
+
                     error_data = {}
 
                 title = str(
@@ -814,23 +688,21 @@ async def fetch_auction_lots(
                     in title
                 ):
 
-                    _invalid_item_ids.add(
+                    _auction_invalid_ids.add(
                         item_id
                     )
 
-                    logger.warning(
-                        "ID %s признан "
-                        "невалидным Auction API "
-                        "и добавлен в кэш "
-                        "невалидных ID.",
+                    logger.info(
+                        "ID %s не существует "
+                        "в Auction API — пропускаем.",
                         item_id,
                     )
 
                 else:
 
                     logger.warning(
-                        "STALCRAFT API "
-                        "вернул 400 для %s: %s",
+                        "Auction API вернул "
+                        "400 для %s: %s",
                         item_id,
                         response.text[:500],
                     )
@@ -838,7 +710,7 @@ async def fetch_auction_lots(
                 return []
 
             # ------------------------------------------------
-            # Success
+            # Успешный ответ
             # ------------------------------------------------
 
             response.raise_for_status()
@@ -862,11 +734,13 @@ async def fetch_auction_lots(
                 )
 
                 if lots is None:
+
                     lots = data.get(
                         "data"
                     )
 
                 if lots is None:
+
                     lots = []
 
             else:
@@ -877,9 +751,10 @@ async def fetch_auction_lots(
                 lots,
                 list,
             ):
+
                 lots = []
 
-            _valid_item_ids.add(
+            _auction_valid_ids.add(
                 item_id
             )
 
@@ -933,146 +808,7 @@ async def fetch_auction_lots(
 
 
 # ============================================================
-# FIND WORKING AUCTION ID
-# ============================================================
-
-async def find_working_auction_id(
-    item: dict,
-) -> Optional[str]:
-
-    """
-    Проверяет ID предмета из локальной базы
-    через Auction API.
-
-    Если ID невалиден, пробует остальные
-    варианты из локальной базы с тем же названием.
-    """
-
-    original_id = str(
-        item.get("item_id", "")
-    ).strip()
-
-    item_name = (
-        item.get("name")
-        or item.get("item_name")
-        or ""
-    )
-
-    # --------------------------------------------------------
-    # Получаем локальный ID
-    # --------------------------------------------------------
-
-    local_id = (
-        resolve_local_item_id(
-            item
-        )
-    )
-
-    candidates: list[str] = []
-
-    if local_id:
-        candidates.append(
-            local_id
-        )
-
-    if (
-        original_id
-        and original_id not in candidates
-    ):
-        candidates.append(
-            original_id
-        )
-
-    # --------------------------------------------------------
-    # Все кандидаты с таким названием
-    # --------------------------------------------------------
-
-    local_candidates = (
-        local_database.find_by_name(
-            item_name
-        )
-    )
-
-    for candidate in local_candidates:
-
-        candidate_id = str(
-            candidate.get("id", "")
-        ).strip()
-
-        if (
-            candidate_id
-            and candidate_id
-            not in candidates
-        ):
-
-            candidates.append(
-                candidate_id
-            )
-
-    if not candidates:
-
-        logger.warning(
-            "Не найден ID в stalzone-database "
-            "для предмета '%s'.",
-            item_name,
-        )
-
-        return None
-
-    # --------------------------------------------------------
-    # Проверяем кандидатов
-    # --------------------------------------------------------
-
-    for candidate_id in candidates:
-
-        if candidate_id in _invalid_item_ids:
-            continue
-
-        # Если уже знаем, что ID рабочий,
-        # не делаем дополнительный запрос.
-        if candidate_id in _valid_item_ids:
-
-            return candidate_id
-
-        lots = await fetch_auction_lots(
-            candidate_id
-        )
-
-        # ВАЖНО:
-        # Пустой список не обязательно означает
-        # невалидный ID.
-        #
-        # fetch_auction_lots сам добавляет ID
-        # в _invalid_item_ids только при
-        # "Invalid item id".
-        if candidate_id not in _invalid_item_ids:
-
-            _valid_item_ids.add(
-                candidate_id
-            )
-
-            logger.info(
-                "Auction ID подтверждён: "
-                "%s -> %s",
-                item_name,
-                candidate_id,
-            )
-
-            return candidate_id
-
-    logger.warning(
-        "Не удалось найти рабочий Auction ID "
-        "для предмета '%s'. "
-        "Проверенные кандидаты: %s",
-        item_name,
-        candidates,
-    )
-
-    return None
-
-
-# ============================================================
-# PRICE PARSING
+# PRICE
 # ============================================================
 
 def get_lot_buyout_price(
@@ -1113,6 +849,7 @@ def get_lot_buyout_price(
             )
 
             if price > 0:
+
                 return price
 
         except (
@@ -1126,7 +863,7 @@ def get_lot_buyout_price(
 
 
 # ============================================================
-# RARITY EXTRACTION
+# RARITY
 # ============================================================
 
 RARITY_KEYS = {
@@ -1158,7 +895,6 @@ def find_rarity_recursive(
         dict,
     ):
 
-        # Сначала проверяем известные ключи
         for key, value in obj.items():
 
             normalized_key = (
@@ -1174,10 +910,8 @@ def find_rarity_recursive(
             )
 
             if (
-                normalized_key
-                in RARITY_KEYS
-                or compact_key
-                in RARITY_KEYS
+                normalized_key in RARITY_KEYS
+                or compact_key in RARITY_KEYS
             ):
 
                 rarity = (
@@ -1189,7 +923,6 @@ def find_rarity_recursive(
                 if rarity:
                     return rarity
 
-        # Затем рекурсивно всё содержимое
         for value in obj.values():
 
             result = (
@@ -1254,7 +987,7 @@ def get_lot_rarity(
 
 
 # ============================================================
-# RARITY PRICES
+# COLLECT RARITY PRICES
 # ============================================================
 
 def collect_rarity_prices(
@@ -1286,7 +1019,6 @@ def collect_rarity_prices(
             )
         )
 
-        # Не угадываем редкость.
         if not rarity:
             continue
 
@@ -1305,7 +1037,7 @@ def collect_rarity_prices(
 
 
 # ============================================================
-# AUCTION PRICE
+# AUCTION PRICE FOR SNIPER
 # ============================================================
 
 async def fetch_auction_price(
@@ -1376,7 +1108,7 @@ async def fetch_auction_price(
 
 
 # ============================================================
-# ITEMS FROM SUPABASE
+# SUPABASE ITEMS
 # ============================================================
 
 async def load_tracked_items() -> list[dict]:
@@ -1453,6 +1185,7 @@ async def send_telegram_message(
             )
 
         if response.is_success:
+
             return True
 
         logger.warning(
@@ -1522,48 +1255,50 @@ async def collect_item(
     item: dict,
 ) -> None:
 
-    # --------------------------------------------------------
-    # Ищем рабочий Auction ID
-    # --------------------------------------------------------
-
-    auction_id = (
-        await find_working_auction_id(
-            item
+    item_id = str(
+        item.get(
+            "item_id",
+            ""
         )
+    ).strip()
+
+    item_name = (
+        item.get(
+            "name"
+        )
+        or item_id
     )
 
-    if not auction_id:
-
-        logger.debug(
-            "Рабочий Auction ID не найден: %s",
-            item.get("name")
-            or item.get("item_id"),
-        )
+    if not item_id:
 
         return
 
     # --------------------------------------------------------
-    # Получаем лоты
+    # Только ID из Supabase.
+    # Никакого поиска по названию.
     # --------------------------------------------------------
 
+    if not validate_local_item_id(
+        item_id
+    ):
+
+        return
+
     lots = await fetch_auction_lots(
-        auction_id,
+        item_id,
         force_refresh=True,
     )
 
     if not lots:
 
         logger.debug(
-            "Нет лотов для %s (%s)",
-            item.get("name"),
-            auction_id,
+            "На аукционе нет лотов: "
+            "%s (%s)",
+            item_name,
+            item_id,
         )
 
         return
-
-    # --------------------------------------------------------
-    # Определяем цены по редкости
-    # --------------------------------------------------------
 
     rarity_prices = (
         collect_rarity_prices(
@@ -1574,45 +1309,28 @@ async def collect_item(
     if not rarity_prices:
 
         logger.debug(
-            "Не удалось определить "
-            "редкость лотов %s",
-            auction_id,
+            "Для %s (%s) не удалось "
+            "определить цены по редкости.",
+            item_name,
+            item_id,
         )
 
         return
-
-    # --------------------------------------------------------
-    # Сохраняем цены
-    # --------------------------------------------------------
 
     for rarity, price in (
         rarity_prices.items()
     ):
 
-        save_item = dict(
-            item
-        )
-
-        # ВАЖНО:
-        # Сохраняем в историю рабочий ID,
-        # который реально принял Auction API.
-        save_item[
-            "item_id"
-        ] = auction_id
-
         await save_price(
-            save_item,
+            item,
             price,
             rarity,
         )
 
         logger.info(
             "%s | ID=%s | %s | %s",
-            item.get(
-                "name",
-                auction_id,
-            ),
-            auction_id,
+            item_name,
+            item_id,
             rarity,
             price,
         )
@@ -1683,7 +1401,7 @@ _sniper_last_alert: dict[
 async def load_snipers() -> list[dict]:
 
     """
-    В таблице user_snipers НЕТ поля enabled.
+    В таблице user_snipers нет поля enabled.
     """
 
     try:
@@ -1726,16 +1444,64 @@ async def monitor_snipers() -> None:
     if not snipers:
         return
 
-    # ========================================================
-    # Получаем рабочие ID предметов
-    # ========================================================
+    # --------------------------------------------------------
+    # Для снайперов используем только их item_id.
+    # --------------------------------------------------------
 
-    sniper_items: dict[
+    semaphore = asyncio.Semaphore(
+        MAX_CONCURRENT_REQUESTS
+    )
+
+    checked_ids: dict[
         str,
-        dict,
+        bool,
     ] = {}
 
+    async def validate_sniper_id(
+        item_id: str,
+    ):
+
+        async with semaphore:
+
+            if item_id in checked_ids:
+                return
+
+            checked_ids[
+                item_id
+            ] = validate_local_item_id(
+                item_id
+            )
+
+    unique_ids = set()
+
     for sniper in snipers:
+
+        item_id = sniper.get(
+            "item_id"
+        )
+
+        if item_id:
+
+            unique_ids.add(
+                str(
+                    item_id
+                ).strip()
+            )
+
+    await asyncio.gather(
+        *(
+            validate_sniper_id(
+                item_id
+            )
+            for item_id in unique_ids
+        )
+    )
+
+    for sniper in snipers:
+
+        sniper_id = sniper.get(
+            "id"
+        )
 
         item_id = sniper.get(
             "item_id"
@@ -1748,116 +1514,31 @@ async def monitor_snipers() -> None:
             item_id
         ).strip()
 
+        # ----------------------------------------------------
+        # ID должен существовать в локальной базе.
+        # ----------------------------------------------------
+
+        if not checked_ids.get(
+            item_id,
+            False,
+        ):
+
+            continue
+
+        # ----------------------------------------------------
+        # Если Auction API уже признал ID невалидным,
+        # пропускаем.
+        # ----------------------------------------------------
+
+        if item_id in _auction_invalid_ids:
+
+            continue
+
         item_name = (
             sniper.get(
                 "item_name"
             )
             or item_id
-        )
-
-        sniper_items.setdefault(
-            item_id,
-            {
-                "item_id": item_id,
-                "name": item_name,
-                "category": None,
-            },
-        )
-
-    if not sniper_items:
-        return
-
-    # ========================================================
-    # Проверяем рабочие Auction ID
-    # ========================================================
-
-    semaphore = asyncio.Semaphore(
-        MAX_CONCURRENT_REQUESTS
-    )
-
-    resolved_sniper_ids: dict[
-        str,
-        Optional[str],
-    ] = {}
-
-    async def resolve_sniper(
-        original_id: str,
-        item: dict,
-    ):
-
-        async with semaphore:
-
-            try:
-
-                resolved = (
-                    await find_working_auction_id(
-                        item
-                    )
-                )
-
-                resolved_sniper_ids[
-                    original_id
-                ] = resolved
-
-            except Exception as exc:
-
-                logger.exception(
-                    "Ошибка проверки "
-                    "снайпера %s: %s",
-                    original_id,
-                    exc,
-                )
-
-                resolved_sniper_ids[
-                    original_id
-                ] = None
-
-    await asyncio.gather(
-        *(
-            resolve_sniper(
-                original_id,
-                item,
-            )
-            for original_id, item
-            in sniper_items.items()
-        )
-    )
-
-    # ========================================================
-    # Проверяем каждый снайпер
-    # ========================================================
-
-    for sniper in snipers:
-
-        sniper_id = sniper.get(
-            "id"
-        )
-
-        original_item_id = sniper.get(
-            "item_id"
-        )
-
-        if not original_item_id:
-            continue
-
-        original_item_id = str(
-            original_item_id
-        ).strip()
-
-        auction_id = (
-            resolved_sniper_ids.get(
-                original_item_id
-            )
-        )
-
-        if not auction_id:
-            continue
-
-        item_name = (
-            sniper.get(
-                "item_name"
-            )
-            or original_item_id
         )
 
         rarity = (
@@ -1900,26 +1581,24 @@ async def monitor_snipers() -> None:
 
             continue
 
-        # ----------------------------------------------------
-        # Цена
-        # ----------------------------------------------------
-
         current_price = (
             await fetch_auction_price(
-                auction_id,
+                item_id,
                 rarity,
             )
         )
 
         if current_price is None:
+
             continue
 
         if current_price > threshold:
+
             continue
 
-        # ====================================================
-        # COOLDOWN
-        # ====================================================
+        # ----------------------------------------------------
+        # Cooldown
+        # ----------------------------------------------------
 
         if sniper_id is not None:
 
@@ -1952,15 +1631,16 @@ async def monitor_snipers() -> None:
                 - last_alert
                 < SNIPER_COOLDOWN
             ):
+
                 continue
 
         else:
 
             sniper_key = None
 
-        # ====================================================
-        # TELEGRAM USER
-        # ====================================================
+        # ----------------------------------------------------
+        # Telegram
+        # ----------------------------------------------------
 
         telegram_id = (
             sniper.get(
@@ -1972,6 +1652,7 @@ async def monitor_snipers() -> None:
         )
 
         if not telegram_id:
+
             continue
 
         text = (
@@ -2004,7 +1685,7 @@ async def monitor_snipers() -> None:
                 "Снайпер сработал: "
                 "%s | ID=%s | %s | %s",
                 item_name,
-                auction_id,
+                item_id,
                 rarity,
                 current_price,
             )
@@ -2133,3 +1814,4 @@ if __name__ == "__main__":
         logger.info(
             "Collector остановлен."
         )
+```
