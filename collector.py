@@ -1,8 +1,6 @@
-import os
-import json
-import time
 import asyncio
-import logging
+import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,119 +9,34 @@ from supabase import create_client, Client
 
 
 # ============================================================
-# НАСТРОЙКИ
+# CONFIG
 # ============================================================
-
-REGION = os.getenv(
-    "STALCRAFT_REGION",
-    "RU"
-).upper()
-
-AUCTION_API = os.getenv(
-    "AUCTION_API",
-    f"https://eapi.stalcraft.net/{REGION}/auction"
-)
-
-STALZONE_DATABASE_PATH = os.getenv(
-    "STALZONE_DATABASE_PATH",
-    "/app/stalzone-database/ru/items/artefact"
-)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-STALCRAFT_CLIENT_ID = os.getenv(
-    "STALCRAFT_CLIENT_ID"
-)
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
-STALCRAFT_CLIENT_SECRET = os.getenv(
-    "STALCRAFT_CLIENT_SECRET"
-)
+TOKEN_URL = "https://exbo.net/oauth/token"
+AUCTION_URL = "https://eapi.stalcraft.net/ru/auction"
 
-COLLECT_INTERVAL = int(
+DATABASE_PATH = Path(
     os.getenv(
-        "COLLECT_INTERVAL",
-        "300"
+        "STALZONE_DATABASE_PATH",
+        "/app/stalzone-database/ru/items/artefact"
     )
 )
 
-REQUEST_TIMEOUT = float(
-    os.getenv(
-        "REQUEST_TIMEOUT",
-        "30"
-    )
-)
+COLLECT_INTERVAL = int(os.getenv("COLLECT_INTERVAL", "300"))
+REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "0.15"))
 
-AUCTION_LIMIT = int(
-    os.getenv(
-        "AUCTION_LIMIT",
-        "200"
-    )
-)
-
-REQUEST_DELAY = float(
-    os.getenv(
-        "REQUEST_DELAY",
-        "0.15"
-    )
-)
-
-MAX_RETRIES = int(
-    os.getenv(
-        "MAX_RETRIES",
-        "3"
-    )
-)
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "30"))
+REQUEST_RETRIES = int(os.getenv("REQUEST_RETRIES", "3"))
 
 
 # ============================================================
-# ЛОГИ
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-
-logger = logging.getLogger("collector")
-
-
-# ============================================================
-# ПРОВЕРКА ENV
-# ============================================================
-
-required_env = {
-    "SUPABASE_URL": SUPABASE_URL,
-    "SUPABASE_KEY": SUPABASE_KEY,
-    "STALCRAFT_CLIENT_ID": STALCRAFT_CLIENT_ID,
-    "STALCRAFT_CLIENT_SECRET": STALCRAFT_CLIENT_SECRET,
-}
-
-missing_env = [
-    key
-    for key, value in required_env.items()
-    if not value
-]
-
-if missing_env:
-    raise RuntimeError(
-        "Не заданы обязательные переменные окружения: "
-        + ", ".join(missing_env)
-    )
-
-
-# ============================================================
-# SUPABASE
-# ============================================================
-
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
-
-
-# ============================================================
-# РЕДКОСТИ
+# RARITY
 # ============================================================
 
 QLT_TO_RARITY = {
@@ -136,35 +49,59 @@ QLT_TO_RARITY = {
     5: "Легендарный",
 }
 
-ALL_RARITIES = [
-    "Обычный",
-    "Необычный",
-    "Особый",
-    "Редкий",
-    "Исключительный",
-    "Легендарный",
-]
-
 
 QUALITY_KEY_TO_RARITY = {
-    "core.quality.common":
-        "Обычный",
-
-    "core.quality.uncommon":
-        "Необычный",
-
-    "core.quality.special":
-        "Особый",
-
-    "core.quality.rare":
-        "Редкий",
-
-    "core.quality.exclusive":
-        "Исключительный",
-
-    "core.quality.legendary":
-        "Легендарный",
+    "core.quality.common": "Обычный",
+    "core.quality.uncommon": "Необычный",
+    "core.quality.special": "Особый",
+    "core.quality.rare": "Редкий",
+    "core.quality.exclusive": "Исключительный",
+    "core.quality.legendary": "Легендарный",
 }
+
+
+COLOR_TO_RARITY = {
+    "DEFAULT": "Обычный",
+    "GREEN": "Необычный",
+    "BLUE": "Особый",
+    "PURPLE": "Редкий",
+    "GOLD": "Исключительный",
+    "YELLOW": "Исключительный",
+    "RED": "Легендарный",
+
+    "UNCOMMON": "Необычный",
+    "SPECIAL": "Особый",
+    "RARE": "Редкий",
+    "EXCLUSIVE": "Исключительный",
+    "LEGENDARY": "Легендарный",
+}
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def safe_int(value: Any) -> Optional[int]:
+    """Безопасно преобразовать значение в int."""
+    if value is None:
+        return None
+
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_string(value: Any) -> Optional[str]:
+    """Безопасно получить строку."""
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else None
+
+    return str(value)
 
 
 # ============================================================
@@ -172,1843 +109,1022 @@ QUALITY_KEY_TO_RARITY = {
 # ============================================================
 
 class LocalItemDatabase:
+    """
+    Локальная официальная база STALZONE.
 
-    def __init__(
-        self,
-        base_path: str
-    ):
+    Именно она является MASTER SOURCE предметов.
 
-        self.base_path = Path(
-            base_path
-        )
+    Структура примерно такая:
 
-        self.items: Dict[
-            str,
-            Dict[str, Any]
-        ] = {}
+    artefact/
+        thermal/
+            gy10.json
+            _variants/
+                gy10/
+                    1.json
+                    5.json
+                    6.json
+                    ...
+    """
 
-        # ----------------------------------------------------
-        # ВАЖНО:
-        # Для каждого item_id храним ВСЕ найденные
-        # _variants/<item_id>/<N>.json
-        #
-        # Это нужно для проверки:
-        #
-        # auction ptn=5
-        #       ↓
-        # _variants/<id>/5.json
-        #
-        # ----------------------------------------------------
+    def __init__(self, root: Path):
+        self.root = root
 
-        self.variants: Dict[
-            str,
-            Dict[str, str]
-        ] = {}
+        # item_id -> основной JSON
+        self.items: Dict[str, Dict[str, Any]] = {}
 
-        logger.info(
-            "Путь официальной базы: %s",
-            self.base_path
-        )
+        # item_id -> список JSON вариантов
+        self.variants: Dict[str, Dict[str, Path]] = {}
 
-        self.load()
+        self._load()
 
-    # ========================================================
+    # --------------------------------------------------------
     # LOAD
-    # ========================================================
+    # --------------------------------------------------------
 
-    def load(self) -> None:
-
-        if not self.base_path.exists():
-
+    def _load(self) -> None:
+        if not self.root.exists():
             raise FileNotFoundError(
-                f"Не найдена официальная база: "
-                f"{self.base_path}"
+                f"STALZONE database not found: {self.root}"
             )
 
-        json_files = list(
-            self.base_path.rglob("*.json")
+        json_files = list(self.root.rglob("*.json"))
+
+        print(
+            f"LOCAL DB | scanning: {self.root} | "
+            f"json_files={len(json_files)}"
         )
 
-        logger.info(
-            "Найдено JSON-файлов: %d",
-            len(json_files)
-        )
-
-        variant_files_count = 0
-
-        for file_path in json_files:
-
+        for path in json_files:
             try:
-
-                with open(
-                    file_path,
-                    "r",
-                    encoding="utf-8"
-                ) as f:
-
+                with path.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-
             except Exception as e:
-
-                logger.warning(
-                    "Ошибка чтения %s: %s",
-                    file_path,
-                    e
+                print(
+                    f"LOCAL DB | JSON ERROR | "
+                    f"{path} | {e}"
                 )
-
                 continue
 
-            if not isinstance(
-                data,
-                dict
-            ):
+            if not isinstance(data, dict):
                 continue
 
-            item_id = data.get("id")
-
-            if not isinstance(
-                item_id,
-                str
-            ):
-                continue
-
-            item_id = item_id.strip()
+            item_id = normalize_string(data.get("id"))
 
             if not item_id:
                 continue
 
             # ------------------------------------------------
-            # NAME
+            # _variants/<item_id>/<N>.json
             # ------------------------------------------------
 
-            name_data = data.get(
-                "name",
-                {}
-            )
+            parts = path.parts
 
-            item_name = item_id
+            if "_variants" in parts:
+                try:
+                    variants_index = parts.index("_variants")
 
-            if isinstance(
-                name_data,
-                dict
-            ):
+                    if variants_index + 2 < len(parts):
+                        variant_item_id = parts[variants_index + 1]
+                        variant_file = parts[variants_index + 2]
 
-                lines = name_data.get(
-                    "lines",
-                    {}
-                )
+                        variant_number = Path(
+                            variant_file
+                        ).stem
 
-                if isinstance(
-                    lines,
-                    dict
-                ):
+                        if variant_item_id == item_id:
+                            self.variants.setdefault(
+                                item_id,
+                                {}
+                            )[variant_number] = path
 
-                    item_name = (
-                        lines.get("ru")
-                        or lines.get("en")
-                        or item_id
-                    )
+                            continue
 
-            elif name_data:
-
-                item_name = str(
-                    name_data
-                )
+                except Exception:
+                    pass
 
             # ------------------------------------------------
-            # CATEGORY
-            # ------------------------------------------------
-
-            category = data.get(
-                "category",
-                "artefact"
-            )
-
-            if not isinstance(
-                category,
-                str
-            ):
-
-                category = "artefact"
-
-            # ------------------------------------------------
-            # COLOR
-            # ------------------------------------------------
-
-            color = data.get(
-                "color",
-                "DEFAULT"
-            )
-
-            if not isinstance(
-                color,
-                str
-            ):
-
-                color = "DEFAULT"
-
-            # ------------------------------------------------
-            # ЛОКАЛЬНЫЙ _VARIANT
-            # ------------------------------------------------
-
-            local_variant = self.detect_variant(
-                file_path
-            )
-
-            # ------------------------------------------------
-            # РЕДКОСТЬ
-            # ------------------------------------------------
-
-            json_rarity = (
-                self.detect_json_rarity(
-                    data
-                )
-            )
-
-            # ------------------------------------------------
-            # СОБИРАЕМ ВСЕ _variants
-            # ------------------------------------------------
-
-            if local_variant != "0":
-
-                variant_map = self.variants.setdefault(
-                    item_id,
-                    {}
-                )
-
-                variant_map[
-                    local_variant
-                ] = str(file_path)
-
-                variant_files_count += 1
-
-            # ------------------------------------------------
-            # ОСНОВНАЯ ЗАПИСЬ ITEM
+            # MAIN ITEM JSON
             # ------------------------------------------------
 
             if item_id not in self.items:
-
                 self.items[item_id] = {
-
-                    "id":
-                        item_id,
-
-                    "name":
-                        item_name,
-
-                    "name_ru":
-                        item_name,
-
-                    "category":
-                        category,
-
-                    "color":
-                        color,
-
-                    "variant":
-                        local_variant,
-
-                    "json_rarity":
-                        json_rarity,
-
-                    "file":
-                        str(file_path),
+                    "id": item_id,
+                    "name": data.get("name", item_id),
+                    "color": data.get("color"),
+                    "category": data.get("category"),
+                    "path": path,
+                    "data": data,
                 }
 
-            else:
-
-                current = self.items[
-                    item_id
-                ]
-
-                # Если основной файл был найден раньше,
-                # а сейчас нашли _variants — сохраняем
-                # первый реальный variant для совместимости.
-                if (
-                    current.get("variant") == "0"
-                    and local_variant != "0"
-                ):
-
-                    current[
-                        "variant"
-                    ] = local_variant
-
-                if (
-                    not current.get(
-                        "json_rarity"
-                    )
-                    and json_rarity
-                ):
-
-                    current[
-                        "json_rarity"
-                    ] = json_rarity
-
-        logger.info(
-            "Официальная база: %s",
-            self.base_path
+        print(
+            f"LOCAL DB | loaded items={len(self.items)} | "
+            f"items_with_variants={len(self.variants)}"
         )
 
-        logger.info(
-            "Официальная база артефактов "
-            "загружена: %d",
-            len(self.items)
-        )
+    # --------------------------------------------------------
+    # PUBLIC
+    # --------------------------------------------------------
 
-        logger.info(
-            "Файлов _variants найдено: %d",
-            variant_files_count
-        )
+    def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
+        return self.items.get(item_id)
 
-        logger.info(
-            "Предметов с _variants: %d",
-            len(self.variants)
-        )
+    def get_all_items(self) -> List[Dict[str, Any]]:
+        return list(self.items.values())
 
-    # ========================================================
-    # DETECT VARIANT FROM PATH
-    # ========================================================
+    def get_item_ids(self) -> List[str]:
+        return list(self.items.keys())
 
-    @staticmethod
-    def detect_variant(
-        file_path: Path
-    ) -> str:
+    def get_variants(self, item_id: str) -> Dict[str, Path]:
+        return self.variants.get(item_id, {})
 
-        parts = file_path.parts
+    def has_variant(self, item_id: str, ptn: Any) -> bool:
+        if ptn is None:
+            return False
 
-        try:
+        ptn_str = str(ptn)
 
-            if "_variants" not in parts:
-
-                return "0"
-
-            index = parts.index(
-                "_variants"
-            )
-
-            # .../_variants/<item_id>/<N>.json
-
-            if index + 2 < len(parts):
-
-                variant = parts[
-                    index + 2
-                ]
-
-                if variant.endswith(
-                    ".json"
-                ):
-
-                    variant = variant[:-5]
-
-                if variant:
-
-                    return str(
-                        variant
-                    )
-
-        except Exception:
-
-            pass
-
-        return "0"
-
-    # ========================================================
-    # GET LOCAL VARIANTS
-    # ========================================================
-
-    def get_variants(
-        self,
-        item_id: str
-    ) -> Dict[str, str]:
-
-        return self.variants.get(
-            item_id,
-            {}
-        )
-
-    # ========================================================
-    # CHECK LOCAL VARIANT
-    # ========================================================
-
-    def has_variant(
-        self,
-        item_id: str,
-        variant: int
-    ) -> bool:
-
-        return str(variant) in self.variants.get(
-            item_id,
-            {}
-        )
-
-    # ========================================================
-    # VARIANT FILE
-    # ========================================================
+        return ptn_str in self.variants.get(item_id, {})
 
     def get_variant_file(
         self,
         item_id: str,
-        variant: int
+        ptn: Any
+    ) -> Optional[Path]:
+        if ptn is None:
+            return None
+
+        return self.variants.get(item_id, {}).get(str(ptn))
+
+    # --------------------------------------------------------
+    # RARITY
+    # --------------------------------------------------------
+
+    def detect_json_rarity(
+        self,
+        obj: Any
+    ) -> Optional[str]:
+        """
+        Рекурсивно ищет core.quality.* в JSON.
+        """
+
+        if isinstance(obj, dict):
+
+            key = obj.get("key")
+
+            if isinstance(key, str):
+                rarity = QUALITY_KEY_TO_RARITY.get(key)
+
+                if rarity:
+                    return rarity
+
+            for value in obj.values():
+                rarity = self.detect_json_rarity(value)
+
+                if rarity:
+                    return rarity
+
+        elif isinstance(obj, list):
+
+            for value in obj:
+                rarity = self.detect_json_rarity(value)
+
+                if rarity:
+                    return rarity
+
+        return None
+
+    def get_local_rarity(
+        self,
+        item: Dict[str, Any]
     ) -> Optional[str]:
 
-        return self.variants.get(
-            item_id,
-            {}
-        ).get(
-            str(variant)
+        data = item.get("data", {})
+
+        # 1. quality key
+        rarity = self.detect_json_rarity(data)
+
+        if rarity:
+            return rarity
+
+        # 2. color
+        color = normalize_string(
+            item.get("color")
         )
 
-    # ========================================================
+        if color:
+            return COLOR_TO_RARITY.get(
+                color.upper()
+            )
+
+        return None
+
+    # --------------------------------------------------------
     # DEBUG VARIANTS
-    # ========================================================
+    # --------------------------------------------------------
 
     def log_item_variants(
         self,
         item_id: str
     ) -> None:
 
-        variants = self.get_variants(
-            item_id
-        )
+        variants = self.get_variants(item_id)
 
         if not variants:
-
-            logger.info(
-                "LOCAL VARIANTS | "
-                "ID=%s | нет _variants",
-                item_id
-            )
-
             return
 
-        ordered = sorted(
+        values = sorted(
             variants.keys(),
             key=lambda x: (
-                int(x)
-                if str(x).isdigit()
-                else 999
+                int(x) if x.isdigit() else 999999,
+                x
             )
         )
 
-        logger.info(
-            "LOCAL VARIANTS | "
-            "ID=%s | [%s]",
-            item_id,
-            ", ".join(ordered)
+        print(
+            f"LOCAL VARIANTS | "
+            f"ID={item_id} | "
+            f"ptn=[{', '.join(values)}]"
         )
 
-    # ========================================================
-    # DETECT RARITY
-    # ========================================================
 
-    @staticmethod
-    def detect_json_rarity(
-        data: Dict[str, Any]
+# ============================================================
+# AUCTION COLLECTOR
+# ============================================================
+
+class AuctionCollector:
+
+    def __init__(
+        self,
+        local_db: LocalItemDatabase,
+        supabase: Client
+    ):
+        self.local_db = local_db
+        self.supabase = supabase
+
+        self.access_token: Optional[str] = None
+
+    # --------------------------------------------------------
+    # TOKEN
+    # --------------------------------------------------------
+
+    async def get_access_token(
+        self
     ) -> Optional[str]:
 
-        def recursive_search(
-            obj: Any
-        ) -> Optional[str]:
-
-            if isinstance(
-                obj,
-                dict
-            ):
-
-                key = obj.get(
-                    "key"
-                )
-
-                if isinstance(
-                    key,
-                    str
-                ):
-
-                    rarity = (
-                        QUALITY_KEY_TO_RARITY.get(
-                            key
-                        )
-                    )
-
-                    if rarity:
-
-                        return rarity
-
-                for value in obj.values():
-
-                    result = recursive_search(
-                        value
-                    )
-
-                    if result:
-
-                        return result
-
-            elif isinstance(
-                obj,
-                list
-            ):
-
-                for value in obj:
-
-                    result = recursive_search(
-                        value
-                    )
-
-                    if result:
-
-                        return result
-
+        if not CLIENT_ID or not CLIENT_SECRET:
+            print(
+                "TOKEN ERROR | "
+                "CLIENT_ID / CLIENT_SECRET not configured"
+            )
             return None
 
-        return recursive_search(
-            data
-        )
-
-    # ========================================================
-    # GET ITEM
-    # ========================================================
-
-    def get_item(
-        self,
-        item_id: str
-    ) -> Optional[
-        Dict[str, Any]
-    ]:
-
-        return self.items.get(
-            item_id
-        )
-
-    # ========================================================
-    # ALL ITEMS
-    # ========================================================
-
-    def get_all_items(
-        self
-    ) -> List[
-        Dict[str, Any]
-    ]:
-
-        return list(
-            self.items.values()
-        )
-
-    # ========================================================
-    # IDS
-    # ========================================================
-
-    def get_item_ids(
-        self
-    ) -> List[str]:
-
-        return list(
-            self.items.keys()
-        )
-
-
-# ============================================================
-# QLT
-# ============================================================
-
-def get_qlt(
-    lot: Dict[str, Any]
-) -> Optional[int]:
-
-    additional = lot.get(
-        "additional"
-    )
-
-    if not isinstance(
-        additional,
-        dict
-    ):
-
-        return None
-
-    qlt = additional.get(
-        "qlt"
-    )
-
-    if qlt is None:
-
-        return None
-
-    try:
-
-        return int(
-            qlt
-        )
-
-    except (
-        TypeError,
-        ValueError
-    ):
-
-        return None
-
-
-# ============================================================
-# PTN
-# ============================================================
-
-def get_ptn(
-    lot: Dict[str, Any]
-) -> Optional[int]:
-
-    additional = lot.get(
-        "additional"
-    )
-
-    if not isinstance(
-        additional,
-        dict
-    ):
-
-        return None
-
-    ptn = additional.get(
-        "ptn"
-    )
-
-    if ptn is None:
-
-        return None
-
-    try:
-
-        return int(
-            ptn
-        )
-
-    except (
-        TypeError,
-        ValueError
-    ):
-
-        return None
-
-
-# ============================================================
-# PTN DEBUG
-# ============================================================
-
-def debug_ptn_mapping(
-    item: Dict[str, Any],
-    lot: Dict[str, Any],
-    local_db: LocalItemDatabase
-) -> None:
-
-    item_id = item.get(
-        "id",
-        "?"
-    )
-
-    ptn = get_ptn(
-        lot
-    )
-
-    qlt = get_qlt(
-        lot
-    )
-
-    if ptn is None:
-
-        return
-
-    variant_file = (
-        local_db.get_variant_file(
-            item_id,
-            ptn
-        )
-    )
-
-    has_variant = (
-        local_db.has_variant(
-            item_id,
-            ptn
-        )
-    )
-
-    if has_variant:
-
-        logger.info(
-            "PTN CHECK | "
-            "ID=%s | "
-            "qlt=%s | "
-            "ptn=%s | "
-            "_variants/%s.json=YES | "
-            "file=%s",
-
-            item_id,
-            qlt,
-            ptn,
-            ptn,
-            variant_file
-        )
-
-    else:
-
-        logger.warning(
-            "PTN CHECK | "
-            "ID=%s | "
-            "qlt=%s | "
-            "ptn=%s | "
-            "_variants/%s.json=NO",
-
-            item_id,
-            qlt,
-            ptn,
-            ptn
-        )
-
-
-# ============================================================
-# LOT RARITY
-# ============================================================
-
-def get_lot_rarity(
-    lot: Dict[str, Any],
-    item: Dict[str, Any]
-) -> str:
-
-    qlt = get_qlt(
-        lot
-    )
-
-    if qlt is not None:
-
-        rarity = (
-            QLT_TO_RARITY.get(
-                qlt
-            )
-        )
-
-        if rarity:
-
-            return rarity
-
-    json_rarity = item.get(
-        "json_rarity"
-    )
-
-    if isinstance(
-        json_rarity,
-        str
-    ) and json_rarity:
-
-        return json_rarity
-
-    color = str(
-        item.get(
-            "color",
-            "DEFAULT"
-        )
-    ).upper()
-
-    color_map = {
-
-        "DEFAULT":
-            "Обычный",
-
-        "GREEN":
-            "Необычный",
-
-        "BLUE":
-            "Особый",
-
-        "PURPLE":
-            "Редкий",
-
-        "GOLD":
-            "Исключительный",
-
-        "YELLOW":
-            "Исключительный",
-
-        "RED":
-            "Легендарный",
-
-        "UNCOMMON":
-            "Необычный",
-
-        "SPECIAL":
-            "Особый",
-
-        "RARE":
-            "Редкий",
-
-        "EXCLUSIVE":
-            "Исключительный",
-
-        "LEGENDARY":
-            "Легендарный",
-    }
-
-    return color_map.get(
-        color,
-        "Обычный"
-    )
-
-
-# ============================================================
-# TOKEN
-# ============================================================
-
-_token: Optional[str] = None
-_token_expires_at: float = 0
-
-
-async def get_access_token(
-    force_refresh: bool = False
-) -> str:
-
-    global _token
-    global _token_expires_at
-
-    now = time.time()
-
-    if (
-        not force_refresh
-        and _token
-        and now < _token_expires_at
-    ):
-
-        return _token
-
-    payload = {
-
-        "client_id":
-            STALCRAFT_CLIENT_ID,
-
-        "client_secret":
-            STALCRAFT_CLIENT_SECRET,
-
-        "grant_type":
-            "client_credentials",
-    }
-
-    async with httpx.AsyncClient(
-        timeout=REQUEST_TIMEOUT
-    ) as client:
-
-        response = await client.post(
-            "https://exbo.net/oauth/token",
-            data=payload
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-    access_token = data.get(
-        "access_token"
-    )
-
-    if not access_token:
-
-        raise RuntimeError(
-            "EXBO API не вернул access_token"
-        )
-
-    expires_in = int(
-        data.get(
-            "expires_in",
-            3600
-        )
-    )
-
-    _token = access_token
-
-    _token_expires_at = (
-        time.time()
-        + max(
-            expires_in - 60,
-            60
-        )
-    )
-
-    logger.info(
-        "Получен новый "
-        "STALCRAFT access token"
-    )
-
-    return _token
-
-
-# ============================================================
-# AUCTION API
-# ============================================================
-
-async def fetch_auction_lots(
-    item_id: str
-) -> Optional[
-    List[Dict[str, Any]]
-]:
-
-    url = (
-        f"{AUCTION_API}/{item_id}/lots"
-    )
-
-    params = {
-
-        "limit":
-            AUCTION_LIMIT,
-
-        "sort":
-            "buyout_price",
-
-        "order":
-            "asc",
-
-        "additional":
-            "true",
-    }
-
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1
-    ):
+        payload = {
+            "grant_type": "client_credentials",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+        }
 
         try:
-
-            token = (
-                await get_access_token()
-            )
-
-            headers = {
-
-                "Authorization":
-                    f"Bearer {token}",
-
-                "Accept":
-                    "application/json",
-            }
-
             async with httpx.AsyncClient(
                 timeout=REQUEST_TIMEOUT
             ) as client:
 
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers=headers
+                response = await client.post(
+                    TOKEN_URL,
+                    data=payload
                 )
 
-            if response.status_code == 401:
+                response.raise_for_status()
 
-                logger.warning(
-                    "Auction API 401 | "
-                    "ID=%s | обновляем токен",
-                    item_id
-                )
+                data = response.json()
 
-                await get_access_token(
-                    force_refresh=True
-                )
+                token = data.get("access_token")
 
-                continue
+                if not token:
+                    print(
+                        "TOKEN ERROR | "
+                        "access_token missing"
+                    )
+                    return None
 
-            if response.status_code == 404:
+                self.access_token = token
 
-                logger.warning(
-                    "Auction API 404 | ID=%s",
-                    item_id
-                )
+                print("TOKEN OK")
 
-                return []
-
-            response.raise_for_status()
-
-            data = response.json()
-
-            if isinstance(
-                data,
-                list
-            ):
-
-                lots = data
-
-            elif isinstance(
-                data,
-                dict
-            ):
-
-                lots = data.get(
-                    "lots",
-                    []
-                )
-
-                if lots is None:
-
-                    lots = []
-
-            else:
-
-                lots = []
-
-            logger.info(
-                "Auction API | "
-                "ID=%s | лотов=%d",
-                item_id,
-                len(lots)
-            )
-
-            return lots
+                return token
 
         except Exception as e:
-
-            logger.warning(
-                "Auction API ERROR | "
-                "ID=%s | попытка=%d/%d | %s",
-
-                item_id,
-                attempt,
-                MAX_RETRIES,
-                e
+            print(
+                f"TOKEN ERROR | {e}"
             )
 
-            if attempt < MAX_RETRIES:
+            return None
 
-                await asyncio.sleep(
-                    attempt * 2
-                )
+    # --------------------------------------------------------
+    # AUCTION REQUEST
+    # --------------------------------------------------------
 
-    logger.error(
-        "Auction API окончательно "
-        "не ответил | ID=%s",
-        item_id
-    )
+    async def request_auction(
+        self,
+        item_id: str
+    ) -> Optional[Dict[str, Any]]:
 
-    return None
+        if not self.access_token:
+            token = await self.get_access_token()
 
+            if not token:
+                return None
 
-# ============================================================
-# BUYOUT PRICE
-# ============================================================
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+        }
 
-def extract_buyout_price(
-    lot: Dict[str, Any]
-) -> Optional[float]:
+        params = {
+            "itemId": item_id,
+            "limit": 200,
+        }
 
-    keys = [
-        "buyoutPrice",
-        "buyout_price",
-        "buyout",
-    ]
-
-    for key in keys:
-
-        value = lot.get(
-            key
-        )
-
-        if value is None:
-
-            continue
-
-        try:
-
-            price = float(
-                value
-            )
-
-            if price > 0:
-
-                return price
-
-        except (
-            TypeError,
-            ValueError
-        ):
-
-            pass
-
-    additional = lot.get(
-        "additional"
-    )
-
-    if isinstance(
-        additional,
-        dict
-    ):
-
-        for key in keys:
-
-            value = additional.get(
-                key
-            )
-
-            if value is None:
-
-                continue
+        for attempt in range(1, REQUEST_RETRIES + 1):
 
             try:
-
-                price = float(
-                    value
-                )
-
-                if price > 0:
-
-                    return price
-
-            except (
-                TypeError,
-                ValueError
-            ):
-
-                pass
-
-    # startPrice намеренно НЕ используем.
-
-    return None
-
-
-# ============================================================
-# SAVE SUPABASE
-# ============================================================
-
-async def save_price_history(
-    statistics: Dict[str, Any]
-) -> bool:
-
-    item_id = statistics[
-        "item_id"
-    ]
-
-    item_name = statistics[
-        "item_name"
-    ]
-
-    rarity = statistics[
-        "rarity"
-    ]
-
-    min_buyout_price = int(
-        round(
-            float(
-                statistics[
-                    "min_buyout_price"
-                ]
-            )
-        )
-    )
-
-    total_lots = int(
-        statistics[
-            "total_lots"
-        ]
-    )
-
-    category = statistics.get(
-        "category",
-        "Артефакт"
-    )
-
-    # --------------------------------------------------------
-    # ВАЖНО:
-    #
-    # Пока колонка в Supabase называется "variant",
-    # туда записываем PTN.
-    #
-    # Позже, если подтвердим соответствие,
-    # можно переименовать колонку в ptn.
-    # --------------------------------------------------------
-
-    ptn = statistics.get(
-        "ptn"
-    )
-
-    if ptn is None:
-
-        ptn = 0
-
-    ptn = str(
-        ptn
-    )
-
-    payload = {
-
-        "item_id":
-            item_id,
-
-        "item_name":
-            item_name,
-
-        "min_buyout_price":
-            min_buyout_price,
-
-        "total_lots":
-            total_lots,
-
-        "rarity":
-            rarity,
-
-        "category":
-            category,
-
-        "variant":
-            ptn,
-
-        "buyout_price":
-            min_buyout_price,
-    }
-
-    try:
-
-        await asyncio.to_thread(
-
-            lambda: (
-
-                supabase
-                .table(
-                    "price_history"
-                )
-                .insert(
-                    payload
-                )
-                .execute()
-            )
-        )
-
-        logger.info(
-            "SUPABASE OK | "
-            "price_history | "
-            "ID=%s | "
-            "%s | "
-            "ptn=%s | "
-            "min=%d | "
-            "lots=%d",
-
-            item_id,
-            rarity,
-            ptn,
-            min_buyout_price,
-            total_lots
-        )
-
-        return True
-
-    except Exception as e:
-
-        logger.error(
-            "SUPABASE ERROR | "
-            "price_history | "
-            "payload=%s | "
-            "error=%s",
-
-            payload,
-            e
-        )
-
-        return False
-
-
-# ============================================================
-# USER SNIPERS
-# ============================================================
-
-async def monitor_snipers(
-    local_db: LocalItemDatabase
-) -> None:
-
-    try:
-
-        result = await asyncio.to_thread(
-
-            lambda: (
-
-                supabase
-                .table(
-                    "user_snipers"
-                )
-                .select("*")
-                .execute()
-            )
-        )
-
-        snipers = (
-            result.data
-            or []
-        )
-
-        logger.info(
-            "Загружено настроек "
-            "снайперов: %d",
-            len(snipers)
-        )
-
-        for sniper in snipers:
-
-            if not isinstance(
-                sniper,
-                dict
-            ):
-
-                continue
-
-            item_id = (
-                sniper.get(
-                    "item_id"
-                )
-                or
-                sniper.get(
-                    "itemId"
-                )
-            )
-
-            if not item_id:
-
-                continue
-
-            if not local_db.get_item(
-                item_id
-            ):
-
-                logger.warning(
-                    "Снайпер содержит ID, "
-                    "которого нет в официальной базе: %s",
-                    item_id
-                )
-
-    except Exception as e:
-
-        logger.error(
-            "Ошибка чтения "
-            "user_snipers: %s",
-            e
-        )
-
-
-# ============================================================
-# ОСНОВНОЙ ЦИКЛ
-# ============================================================
-
-async def collector_loop(
-    local_db: LocalItemDatabase
-) -> None:
-
-    logger.info(
-        "Запущен основной "
-        "сборщик аукциона"
-    )
-
-    items = (
-        local_db.get_all_items()
-    )
-
-    logger.info(
-        "Загружено предметов "
-        "из официальной базы: %d",
-        len(items)
-    )
-
-    # --------------------------------------------------------
-    # Для диагностики выводим несколько предметов,
-    # у которых есть _variants.
-    # --------------------------------------------------------
-
-    debug_count = 0
-
-    for item in items:
-
-        item_id = item["id"]
-
-        variants = (
-            local_db.get_variants(
-                item_id
-            )
-        )
-
-        if variants:
-
-            local_db.log_item_variants(
-                item_id
-            )
-
-            debug_count += 1
-
-            if debug_count >= 10:
-
-                break
-
-    first_lot_logged = False
-
-    # Чтобы не заспамить Railway логами,
-    # PTN CHECK для каждого item выводим максимум
-    # несколько раз за цикл.
-    ptn_debug_count = 0
-
-    while True:
-
-        cycle_start = time.time()
-
-        logger.info(
-            "========== "
-            "НОВЫЙ ЦИКЛ СБОРА "
-            "=========="
-        )
-
-        successful_items = 0
-        saved_rows = 0
-
-        ptn_debug_count = 0
-
-        # ----------------------------------------------------
-        # ИСТОЧНИК ПРЕДМЕТОВ:
-        # ТОЛЬКО ОФИЦИАЛЬНАЯ LOCAL DATABASE
-        # ----------------------------------------------------
-
-        for item in items:
-
-            item_id = item[
-                "id"
-            ]
-
-            try:
-
-                lots = (
-                    await fetch_auction_lots(
-                        item_id
-                    )
-                )
-
-                if lots is None:
-
-                    continue
-
-                # ------------------------------------------------
-                # DEBUG FIRST LOT
-                # ------------------------------------------------
-
-                if (
-                    not first_lot_logged
-                    and lots
-                ):
-
-                    logger.warning(
-                        "========== "
-                        "ПРИМЕР ЛОТА "
-                        "AUCTION API "
-                        "=========="
+                async with httpx.AsyncClient(
+                    timeout=REQUEST_TIMEOUT
+                ) as client:
+
+                    response = await client.get(
+                        AUCTION_URL,
+                        headers=headers,
+                        params=params
                     )
 
-                    try:
-
-                        logger.warning(
-                            json.dumps(
-                                lots[0],
-                                ensure_ascii=False,
-                                indent=2
-                            )
+                    if response.status_code == 401:
+                        print(
+                            f"AUCTION | ID={item_id} | "
+                            f"401 -> refreshing token"
                         )
 
-                    except Exception:
+                        self.access_token = None
 
-                        logger.warning(
-                            str(
-                                lots[0]
-                            )
-                        )
-
-                    logger.warning(
-                        "=============================================="
-                    )
-
-                    first_lot_logged = True
-
-                item_name = item.get(
-                    "name",
-                    item_id
-                )
-
-                # ------------------------------------------------
-                # ВАЖНО:
-                # Показываем официальные _variants
-                # для предмета, если они есть.
-                # ------------------------------------------------
-
-                if (
-                    ptn_debug_count < 20
-                    and local_db.get_variants(
-                        item_id
-                    )
-                ):
-
-                    local_db.log_item_variants(
-                        item_id
-                    )
-
-                # ------------------------------------------------
-                # GROUPS
-                #
-                # Группируем:
-                #
-                # (rarity, PTN)
-                #
-                # ------------------------------------------------
-
-                groups: Dict[
-                    Tuple[str, str],
-                    List[float]
-                ] = {}
-
-                # Сколько раз встретился каждый PTN
-                # в этом ответе API.
-                ptn_seen: Dict[
-                    int,
-                    int
-                ] = {}
-
-                # ------------------------------------------------
-                # ЛОТЫ
-                # ------------------------------------------------
-
-                for lot in lots:
-
-                    if not isinstance(
-                        lot,
-                        dict
-                    ):
-
-                        continue
-
-                    price = (
-                        extract_buyout_price(
-                            lot
-                        )
-                    )
-
-                    if price is None:
-
-                        continue
-
-                    qlt = get_qlt(
-                        lot
-                    )
-
-                    ptn = get_ptn(
-                        lot
-                    )
-
-                    # ------------------------------------------------
-                    # PTN ДИАГНОСТИКА
-                    # ------------------------------------------------
-
-                    if ptn is not None:
-
-                        ptn_seen[ptn] = (
-                            ptn_seen.get(
-                                ptn,
-                                0
-                            ) + 1
-                        )
-
-                        if ptn_debug_count < 20:
-
-                            debug_ptn_mapping(
-                                item,
-                                lot,
-                                local_db
-                            )
-
-                            ptn_debug_count += 1
-
-                    rarity = (
-                        get_lot_rarity(
-                            lot,
-                            item
-                        )
-                    )
-
-                    if rarity not in ALL_RARITIES:
-
-                        rarity = "Обычный"
-
-                    # ------------------------------------------------
-                    # PTN
-                    #
-                    # Если API не передал PTN,
-                    # используем специальное значение "unknown".
-                    #
-                    # НЕ подставляем локальный _variants,
-                    # потому что сейчас как раз проверяем,
-                    # соответствует ли PTN _variants.
-                    # ------------------------------------------------
-
-                    if ptn is None:
-
-                        ptn_key = "unknown"
-
-                    else:
-
-                        ptn_key = str(
-                            ptn
-                        )
-
-                    group_key = (
-                        rarity,
-                        ptn_key
-                    )
-
-                    if group_key not in groups:
-
-                        groups[
-                            group_key
-                        ] = []
-
-                    groups[
-                        group_key
-                    ].append(
-                        price
-                    )
-
-                # ------------------------------------------------
-                # PTN SUMMARY
-                # ------------------------------------------------
-
-                if ptn_seen:
-
-                    ptn_parts = []
-
-                    for ptn_value, count in sorted(
-                        ptn_seen.items()
-                    ):
-
-                        has_local_variant = (
-                            local_db.has_variant(
-                                item_id,
-                                ptn_value
-                            )
-                        )
-
-                        if has_local_variant:
-
-                            marker = "MATCH"
-
-                        else:
-
-                            marker = "NO_LOCAL"
-
-                        ptn_parts.append(
-                            f"{ptn_value}"
-                            f"={count}"
-                            f"[{marker}]"
-                        )
-
-                    logger.info(
-                        "PTN SUMMARY | "
-                        "ID=%s | %s",
-
-                        item_id,
-
-                        " | ".join(
-                            ptn_parts
-                        )
-                    )
-
-                # ------------------------------------------------
-                # SAVE
-                # ------------------------------------------------
-
-                item_had_data = False
-
-                for (
-                    rarity,
-                    ptn
-                ), prices in sorted(
-                    groups.items(),
-                    key=lambda x: (
-                        ALL_RARITIES.index(
-                            x[0][0]
-                        ),
-                        int(x[0][1])
-                        if str(
-                            x[0][1]
-                        ).isdigit()
-                        else 999
-                    )
-                ):
-
-                    if not prices:
-
-                        continue
-
-                    item_had_data = True
-
-                    prices.sort()
-
-                    min_price = prices[
-                        0
-                    ]
-
-                    statistics = {
-
-                        "item_id":
-                            item_id,
-
-                        "item_name":
-                            item_name,
-
-                        "rarity":
-                            rarity,
-
-                        "category":
-                            "Артефакт",
-
-                        "ptn":
-                            ptn,
-
-                        "min_buyout_price":
-                            min_price,
-
-                        "total_lots":
-                            len(prices),
-                    }
-
-                    if await save_price_history(
-                        statistics
-                    ):
-
-                        saved_rows += 1
-
-                # ------------------------------------------------
-                # LOG
-                # ------------------------------------------------
-
-                if item_had_data:
-
-                    successful_items += 1
-
-                    log_parts = []
-
-                    for (
-                        rarity,
-                        ptn
-                    ), prices in sorted(
-                        groups.items(),
-                        key=lambda x: (
-                            ALL_RARITIES.index(
-                                x[0][0]
-                            ),
-                            int(x[0][1])
-                            if str(
-                                x[0][1]
-                            ).isdigit()
-                            else 999
-                        )
-                    ):
-
-                        if not prices:
-
+                        if await self.get_access_token():
                             continue
 
-                        prices.sort()
+                        return None
 
-                        log_parts.append(
-                            f"{rarity}"
-                            f"[ptn={ptn}]"
-                            f"="
-                            f"{int(prices[0])}"
-                            f"/"
-                            f"{len(prices)}"
-                        )
+                    response.raise_for_status()
 
-                    logger.info(
-                        "ID=%s | %s | %s",
+                    data = response.json()
 
-                        item_id,
-
-                        item_name,
-
-                        " | ".join(
-                            log_parts
-                        )
+                    print(
+                        f"AUCTION OK | "
+                        f"ID={item_id} | "
+                        f"status={response.status_code}"
                     )
 
-                else:
-
-                    logger.info(
-                        "ID=%s | %s | "
-                        "нет лотов с buyout",
-
-                        item_id,
-                        item_name
-                    )
+                    return data
 
             except Exception as e:
 
-                logger.exception(
-                    "Ошибка обработки "
-                    "ID=%s: %s",
+                print(
+                    f"AUCTION ERROR | "
+                    f"ID={item_id} | "
+                    f"attempt={attempt}/{REQUEST_RETRIES} | "
+                    f"{e}"
+                )
 
+                if attempt < REQUEST_RETRIES:
+                    await asyncio.sleep(
+                        attempt * 1.0
+                    )
+
+        return None
+
+    # --------------------------------------------------------
+    # LOT EXTRACTION
+    # --------------------------------------------------------
+
+    @staticmethod
+    def extract_lots(
+        data: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+
+        if not isinstance(data, dict):
+            return []
+
+        possible_keys = (
+            "lots",
+            "data",
+            "items",
+            "auctions",
+        )
+
+        for key in possible_keys:
+
+            value = data.get(key)
+
+            if isinstance(value, list):
+                return [
+                    x for x in value
+                    if isinstance(x, dict)
+                ]
+
+        return []
+
+    # --------------------------------------------------------
+    # QLT
+    # --------------------------------------------------------
+
+    @staticmethod
+    def get_qlt(
+        lot: Dict[str, Any]
+    ) -> Optional[int]:
+
+        additional = lot.get("additional")
+
+        if isinstance(additional, dict):
+
+            value = additional.get("qlt")
+
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+
+        value = lot.get("qlt")
+
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                pass
+
+        return None
+
+    # --------------------------------------------------------
+    # PTN
+    # --------------------------------------------------------
+
+    @staticmethod
+    def get_ptn(
+        lot: Dict[str, Any]
+    ) -> Optional[int]:
+
+        """
+        PTN берём ТОЛЬКО из данных аукциона.
+
+        Если ptn отсутствует — возвращаем None.
+
+        Никаких попыток угадать ptn по локальному
+        _variants здесь нет.
+        """
+
+        additional = lot.get("additional")
+
+        if isinstance(additional, dict):
+
+            value = additional.get("ptn")
+
+            if value is not None:
+
+                try:
+                    return int(value)
+
+                except (TypeError, ValueError):
+                    pass
+
+        value = lot.get("ptn")
+
+        if value is not None:
+
+            try:
+                return int(value)
+
+            except (TypeError, ValueError):
+                pass
+
+        return None
+
+    # --------------------------------------------------------
+    # BUYOUT
+    # --------------------------------------------------------
+
+    @staticmethod
+    def extract_buyout_price(
+        lot: Dict[str, Any]
+    ) -> Optional[int]:
+
+        """
+        Берём именно цену выкупа.
+
+        startPrice намеренно НЕ используем.
+        """
+
+        additional = lot.get("additional")
+
+        candidates = [
+            lot.get("buyoutPrice"),
+            lot.get("buyout_price"),
+            lot.get("buyout"),
+        ]
+
+        if isinstance(additional, dict):
+
+            candidates.extend([
+                additional.get("buyoutPrice"),
+                additional.get("buyout_price"),
+                additional.get("buyout"),
+            ])
+
+        for value in candidates:
+
+            price = safe_int(value)
+
+            if price is not None:
+                return price
+
+        return None
+
+    # --------------------------------------------------------
+    # LOT INFO
+    # --------------------------------------------------------
+
+    def parse_lot(
+        self,
+        lot: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+
+        qlt = self.get_qlt(lot)
+
+        ptn = self.get_ptn(lot)
+
+        price = self.extract_buyout_price(lot)
+
+        if price is None:
+            return None
+
+        rarity = QLT_TO_RARITY.get(
+            qlt,
+            "Обычный"
+        )
+
+        return {
+            "qlt": qlt,
+            "rarity": rarity,
+            "ptn": ptn,
+            "price": price,
+        }
+
+    # --------------------------------------------------------
+    # DEBUG PTN
+    # --------------------------------------------------------
+
+    def debug_ptn_mapping(
+        self,
+        item_id: str,
+        lot_info: Dict[str, Any]
+    ) -> None:
+
+        ptn = lot_info.get("ptn")
+        qlt = lot_info.get("qlt")
+
+        if ptn is None:
+            return
+
+        variant_file = (
+            self.local_db.get_variant_file(
+                item_id,
+                ptn
+            )
+        )
+
+        exists = variant_file is not None
+
+        print(
+            f"PTN CHECK | "
+            f"ID={item_id} | "
+            f"qlt={qlt} | "
+            f"ptn={ptn} | "
+            f"_variants/{ptn}.json="
+            f"{'YES' if exists else 'NO'}"
+            f"{f' | file={variant_file}' if exists else ''}"
+        )
+
+    # --------------------------------------------------------
+    # STATISTICS
+    # --------------------------------------------------------
+
+    def collect_item_statistics(
+        self,
+        item_id: str,
+        lots: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+
+        item = self.local_db.get_item(
+            item_id
+        )
+
+        if not item:
+            return []
+
+        item_name = normalize_string(
+            item.get("name")
+        ) or item_id
+
+        groups: Dict[
+            Tuple[str, Optional[int]],
+            List[int]
+        ] = {}
+
+        ptn_counts: Dict[int, int] = {}
+
+        unknown_ptn_counts: Dict[str, int] = {}
+
+        for lot in lots:
+
+            parsed = self.parse_lot(lot)
+
+            if not parsed:
+                continue
+
+            rarity = parsed["rarity"]
+            ptn = parsed["ptn"]
+            price = parsed["price"]
+
+            key = (
+                rarity,
+                ptn
+            )
+
+            groups.setdefault(
+                key,
+                []
+            ).append(price)
+
+            if ptn is not None:
+                ptn_counts[ptn] = (
+                    ptn_counts.get(ptn, 0) + 1
+                )
+            else:
+                unknown_ptn_counts[rarity] = (
+                    unknown_ptn_counts.get(
+                        rarity,
+                        0
+                    ) + 1
+                )
+
+            self.debug_ptn_mapping(
+                item_id,
+                parsed
+            )
+
+        # ----------------------------------------------------
+        # PTN SUMMARY
+        # ----------------------------------------------------
+
+        if ptn_counts:
+
+            summary = []
+
+            for ptn in sorted(
+                ptn_counts.keys()
+            ):
+
+                count = ptn_counts[ptn]
+
+                exists = self.local_db.has_variant(
                     item_id,
-                    e
+                    ptn
+                )
+
+                marker = (
+                    "MATCH"
+                    if exists
+                    else "NO_LOCAL_VARIANT"
+                )
+
+                summary.append(
+                    f"{ptn}={count}[{marker}]"
+                )
+
+            print(
+                f"PTN SUMMARY | "
+                f"ID={item_id} | "
+                f"{' | '.join(summary)}"
+            )
+
+        # ----------------------------------------------------
+        # BUILD RESULTS
+        # ----------------------------------------------------
+
+        results = []
+
+        for (
+            rarity,
+            ptn
+        ), prices in groups.items():
+
+            if not prices:
+                continue
+
+            min_price = min(prices)
+
+            if ptn is None:
+                ptn_value = "unknown"
+            else:
+                ptn_value = str(ptn)
+
+            results.append({
+                "item_id": item_id,
+                "item_name": item_name,
+                "rarity": rarity,
+                "ptn": ptn_value,
+                "min_buyout_price": min_price,
+                "total_lots": len(prices),
+            })
+
+        return results
+
+    # --------------------------------------------------------
+    # SAVE HISTORY
+    # --------------------------------------------------------
+
+    async def save_price_history(
+        self,
+        statistics: Dict[str, Any]
+    ) -> bool:
+
+        item_id = statistics["item_id"]
+
+        item_name = statistics["item_name"]
+
+        rarity = statistics["rarity"]
+
+        ptn = statistics.get("ptn")
+
+        min_price = safe_int(
+            statistics.get(
+                "min_buyout_price"
+            )
+        )
+
+        total_lots = safe_int(
+            statistics.get(
+                "total_lots"
+            )
+        )
+
+        if min_price is None:
+            print(
+                f"SUPABASE SKIP | "
+                f"ID={item_id} | "
+                f"invalid price"
+            )
+
+            return False
+
+        if total_lots is None:
+            total_lots = 0
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Пока в таблице есть старое поле variant,
+        # используем его для хранения PTN.
+        #
+        # После добавления отдельного ptn можно заменить
+        # "variant" -> "ptn".
+        # ----------------------------------------------------
+
+        payload = {
+            "item_id": item_id,
+            "item_name": item_name,
+            "min_buyout_price": min_price,
+            "total_lots": total_lots,
+            "rarity": rarity,
+            "category": "Артефакт",
+            "variant": str(ptn),
+            "buyout_price": min_price,
+        }
+
+        try:
+
+            response = (
+                self.supabase
+                .table("price_history")
+                .insert(payload)
+                .execute()
+            )
+
+            print(
+                f"SUPABASE OK | "
+                f"price_history | "
+                f"ID={item_id} | "
+                f"{rarity} | "
+                f"ptn={ptn} | "
+                f"min={min_price} | "
+                f"lots={total_lots}"
+            )
+
+            return True
+
+        except Exception as e:
+
+            print(
+                f"SUPABASE ERROR | "
+                f"price_history | "
+                f"ID={item_id} | "
+                f"ptn={ptn} | "
+                f"{e}"
+            )
+
+            return False
+
+    # --------------------------------------------------------
+    # COLLECT ONE ITEM
+    # --------------------------------------------------------
+
+    async def collect_item(
+        self,
+        item: Dict[str, Any]
+    ) -> None:
+
+        item_id = item["id"]
+
+        item_name = (
+            normalize_string(
+                item.get("name")
+            )
+            or item_id
+        )
+
+        print(
+            f"COLLECT | "
+            f"ID={item_id} | "
+            f"name={item_name}"
+        )
+
+        data = await self.request_auction(
+            item_id
+        )
+
+        if data is None:
+            return
+
+        lots = self.extract_lots(
+            data
+        )
+
+        if not lots:
+
+            print(
+                f"COLLECT | "
+                f"ID={item_id} | "
+                f"lots=0"
+            )
+
+            return
+
+        print(
+            f"COLLECT | "
+            f"ID={item_id} | "
+            f"lots={len(lots)}"
+        )
+
+        statistics = (
+            self.collect_item_statistics(
+                item_id,
+                lots
+            )
+        )
+
+        if not statistics:
+            print(
+                f"COLLECT | "
+                f"ID={item_id} | "
+                f"no valid statistics"
+            )
+
+            return
+
+        for stat in statistics:
+
+            await self.save_price_history(
+                stat
+            )
+
+            await asyncio.sleep(
+                REQUEST_DELAY
+            )
+
+    # --------------------------------------------------------
+    # MONITOR SNIPERS
+    # --------------------------------------------------------
+
+    async def monitor_snipers(self) -> None:
+
+        try:
+
+            response = (
+                self.supabase
+                .table("user_snipers")
+                .select("*")
+                .execute()
+            )
+
+            rows = response.data or []
+
+            print(
+                f"SNIPERS | "
+                f"loaded={len(rows)}"
+            )
+
+            for row in rows:
+
+                item_id = normalize_string(
+                    row.get("item_id")
+                )
+
+                if not item_id:
+                    continue
+
+                if not self.local_db.get_item(
+                    item_id
+                ):
+
+                    print(
+                        f"SNIPER WARNING | "
+                        f"ID={item_id} "
+                        f"NOT IN LOCAL OFFICIAL DB"
+                    )
+
+        except Exception as e:
+
+            print(
+                f"SNIPERS ERROR | {e}"
+            )
+
+    # --------------------------------------------------------
+    # ONE CYCLE
+    # --------------------------------------------------------
+
+    async def run_cycle(self) -> None:
+
+        items = (
+            self.local_db.get_all_items()
+        )
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            f"COLLECT CYCLE | "
+            f"items={len(items)}"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        # Проверяем пользовательские настройки
+        await self.monitor_snipers()
+
+        for index, item in enumerate(
+            items,
+            start=1
+        ):
+
+            print(
+                f"[{index}/{len(items)}] "
+                f"ID={item['id']} | "
+                f"{item.get('name', item['id'])}"
+            )
+
+            self.local_db.log_item_variants(
+                item["id"]
+            )
+
+            try:
+
+                await self.collect_item(
+                    item
+                )
+
+            except Exception as e:
+
+                print(
+                    f"ITEM ERROR | "
+                    f"ID={item['id']} | "
+                    f"{e}"
                 )
 
             await asyncio.sleep(
                 REQUEST_DELAY
             )
 
-        # --------------------------------------------------------
-        # SNIPERS
-        # --------------------------------------------------------
-
-        await monitor_snipers(
-            local_db
-        )
-
-        # --------------------------------------------------------
-        # CYCLE STATISTICS
-        # --------------------------------------------------------
-
-        cycle_time = (
-            time.time()
-            - cycle_start
-        )
-
-        logger.info(
-            "========== "
-            "ЦИКЛ ЗАВЕРШЁН "
-            "=========="
-        )
-
-        logger.info(
-            "Обработано предметов: "
-            "%d/%d",
-
-            successful_items,
-            len(items)
-        )
-
-        logger.info(
-            "Записано строк "
-            "в price_history: %d",
-
-            saved_rows
-        )
-
-        logger.info(
-            "Время цикла: %.2f сек.",
-            cycle_time
-        )
-
-        sleep_time = max(
-            0,
-            COLLECT_INTERVAL
-            - cycle_time
-        )
-
-        logger.info(
-            "Следующий цикл через "
-            "%.2f сек.",
-
-            sleep_time
-        )
-
-        await asyncio.sleep(
-            sleep_time
+        print(
+            "COLLECT CYCLE | DONE"
         )
 
 
@@ -2016,38 +1132,97 @@ async def collector_loop(
 # MAIN
 # ============================================================
 
-async def main() -> None:
+async def main():
 
-    logger.info(
-        "STALZONE Auction Collector "
-        "запускается..."
+    print(
+        "=" * 70
     )
 
-    logger.info(
-        "Официальная база: %s",
-        STALZONE_DATABASE_PATH
+    print(
+        "STALZONE AUCTION COLLECTOR"
     )
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        f"LOCAL DB: {DATABASE_PATH}"
+    )
+
+    print(
+        f"COLLECT INTERVAL: "
+        f"{COLLECT_INTERVAL}s"
+    )
+
+    # --------------------------------------------------------
+    # ENV
+    # --------------------------------------------------------
+
+    if not SUPABASE_URL:
+        raise RuntimeError(
+            "SUPABASE_URL is not configured"
+        )
+
+    if not SUPABASE_KEY:
+        raise RuntimeError(
+            "SUPABASE_KEY is not configured"
+        )
+
+    # --------------------------------------------------------
+    # LOCAL DATABASE
+    # --------------------------------------------------------
 
     local_db = LocalItemDatabase(
-        STALZONE_DATABASE_PATH
+        DATABASE_PATH
     )
 
-    logger.info(
-        "Предметов в официальной "
-        "базе: %d",
+    # --------------------------------------------------------
+    # SUPABASE
+    # --------------------------------------------------------
 
-        len(
-            local_db.get_all_items()
+    supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
+    # --------------------------------------------------------
+    # COLLECTOR
+    # --------------------------------------------------------
+
+    collector = AuctionCollector(
+        local_db=local_db,
+        supabase=supabase
+    )
+
+    # --------------------------------------------------------
+    # LOOP
+    # --------------------------------------------------------
+
+    while True:
+
+        try:
+
+            await collector.run_cycle()
+
+        except Exception as e:
+
+            print(
+                f"MAIN ERROR | {e}"
+            )
+
+        print(
+            f"NEXT CYCLE IN "
+            f"{COLLECT_INTERVAL} SECONDS"
         )
-    )
 
-    await collector_loop(
-        local_db
-    )
+        await asyncio.sleep(
+            COLLECT_INTERVAL
+        )
 
 
 # ============================================================
-# START
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
@@ -2060,15 +1235,6 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
 
-        logger.info(
-            "Collector остановлен"
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Критическая ошибка "
-            "collector: %s",
-
-            e
+        print(
+            "COLLECTOR STOPPED"
         )
