@@ -1,6 +1,8 @@
 import os
 import asyncio
+import logging
 import httpx
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -9,8 +11,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 
+# Логирование
+logging.basicConfig(level=logging.INFO)
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE")
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000/api/v1")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://auction-production-a352.up.railway.app")
 
 # --- Настройки контактов и документов ---
 SUPPORT_TGG = "https://t.me/montastaile_life"
@@ -19,7 +24,7 @@ PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
 TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
 PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
 
-ITEMS_PER_PAGE = 10  # Количество предметов на одной странице каталога
+ITEMS_PER_PAGE = 10  # Количество предметов на странице каталога
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -218,7 +223,6 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         await callback.answer("⚠️ Сначала введите ключ доступа!", show_alert=True)
         return
 
-    # Парсим текущую страницу из callback_data (формат: menu_catalog:page или просто menu_catalog)
     parts = callback.data.split(":")
     page = int(parts[1]) if len(parts) > 1 else 0
 
@@ -240,34 +244,29 @@ async def show_catalog_callback(callback: types.CallbackQuery, state: FSMContext
         await callback.answer()
         return
 
-    # 1. Фильтруем уникальные предметы по item_id
     unique_items = []
     seen_ids = set()
     for item in items:
-        i_id = item["item_id"]
-        if i_id not in seen_ids:
+        i_id = item.get("item_id") or item.get("id")
+        if i_id and i_id not in seen_ids:
             seen_ids.add(i_id)
             unique_items.append((i_id, item.get("name", i_id)))
 
-    # 2. Вычисляем данные для пагинации
     total_items = len(unique_items)
-    total_pages = (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     
-    # Ограничиваем номер страницы
     page = max(0, min(page, total_pages - 1))
     
     start_idx = page * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
     page_items = unique_items[start_idx:end_idx]
 
-    # 3. Собираем клавиатуру
     builder = InlineKeyboardBuilder()
     for i_id, name in page_items:
         builder.button(text=f"🔮 {name}", callback_data=f"select_item:{i_id}")
 
     builder.adjust(1)
 
-    # 4. Добавляем кнопки переключения страниц
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"menu_catalog:{page - 1}"))
@@ -299,8 +298,10 @@ async def select_item_info(callback: types.CallbackQuery):
                 timeout=5.0
             )
             items = res.json().get("data", [])
+            target = str(item_id).strip().lower()
             for item in items:
-                if item["item_id"] == item_id:
+                raw_id = str(item.get("item_id") or item.get("id") or "").strip().lower()
+                if raw_id == target:
                     item_name = item.get("name", item_id)
                     break
         except Exception:
@@ -327,7 +328,7 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
     license_key = user_sessions.get(user_id)
 
     item_name = item_id
-    min_price = 0
+    min_price = None
 
     async with httpx.AsyncClient() as client:
         try:
@@ -336,18 +337,27 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
                 params={"telegram_id": user_id}, 
                 timeout=5.0
             )
-            items = res.json().get("data", [])
-            for item in items:
-                if item["item_id"] == item_id and item.get("rarity") == rarity:
-                    item_name = item.get("name", item_id)
-                    min_price = item.get("min_price", item.get("price", 0))
-                    break
-                elif item["item_id"] == item_id:
-                    item_name = item.get("name", item_id)
-        except Exception:
-            pass
+            if res.status_code == 200:
+                items = res.json().get("data", [])
+                target_id = str(item_id).strip().lower()
+                target_rarity = str(rarity).strip().lower()
 
-    price_str = f"{min_price:,.0f} руб." if min_price else "Нет данных"
+                for item in items:
+                    raw_id = str(item.get("item_id") or item.get("id") or "").strip().lower()
+                    raw_rarity = str(item.get("rarity") or "").strip().lower()
+
+                    if raw_id == target_id:
+                        item_name = item.get("name", item_id)
+                        # Точный поиск цены с учетом редкости
+                        if raw_rarity == target_rarity:
+                            min_price = item.get("min_price") or item.get("price") or item.get("min_buyout_price")
+                            break
+                        elif min_price is None:
+                            min_price = item.get("min_price") or item.get("price") or item.get("min_buyout_price")
+        except Exception as e:
+            logging.error(f"Ошибка получения цен: {e}")
+
+    price_str = f"{float(min_price):,.0f} руб." if min_price and float(min_price) > 0 else "Нет данных"
 
     await state.update_data(target_item_id=item_id, target_item_name=item_name, target_rarity=rarity)
     await state.set_state(SniperState.waiting_for_price)
@@ -368,11 +378,12 @@ async def set_rarity_and_ask_price(callback: types.CallbackQuery, state: FSMCont
 @dp.message(SniperState.waiting_for_price)
 async def set_sniper_price(message: types.Message, state: FSMContext):
     clean_text = message.text.replace(" ", "").replace(",", "")
-    if not clean_text.isdigit():
+    try:
+        price = float(clean_text)
+    except ValueError:
         await message.answer("⚠️ Пожалуйста, введите корректное число.")
         return
 
-    price = float(clean_text)
     user_id = message.from_user.id
     license_key = user_sessions.get(user_id)
     data = await state.get_data()
@@ -494,11 +505,12 @@ async def edit_price_start(callback: types.CallbackQuery, state: FSMContext):
 async def process_new_price(message: types.Message, state: FSMContext):
     clean_text = message.text.replace(" ", "").replace(",", "")
 
-    if not clean_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите число.")
+    try:
+        new_price = float(clean_text)
+    except ValueError:
+        await message.answer("⚠️ Пожалуйста, введите корректное число.")
         return
 
-    new_price = float(clean_text)
     data = await state.get_data()
     sniper_id = data.get("editing_sniper_id")
 
@@ -514,7 +526,7 @@ async def process_new_price(message: types.Message, state: FSMContext):
 
 # --- Точка входа ---
 async def main():
-    print("🚀 Запуск Telegram-бота Stalzone...")
+    print("🚀 Запуск Telegram-бота Stalzone...", flush=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
