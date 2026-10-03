@@ -1,0 +1,143 @@
+name: STALZONE Bot + API
+
+on:
+  workflow_dispatch:
+
+  # Перезапуск примерно каждые 5 часов,
+  # потому что GitHub Actions не предназначен для вечного процесса.
+  schedule:
+    - cron: "0 */5 * * *"
+
+concurrency:
+  group: stalzone-app
+  cancel-in-progress: true
+
+jobs:
+  run-app:
+    name: Run Telegram Bot + API
+
+    runs-on: ubuntu-latest
+
+    # Не даём одному запуску работать бесконечно.
+    timeout-minutes: 290
+
+    steps:
+      # ==========================================
+      # 1. Загружаем репозиторий
+      # ==========================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ==========================================
+      # 2. Python
+      # ==========================================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      # ==========================================
+      # 3. Зависимости
+      # ==========================================
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ==========================================
+      # 4. Запускаем FastAPI
+      # ==========================================
+      - name: Start API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+
+        run: |
+          echo "Starting STALZONE API..."
+
+          python -m uvicorn main:app \
+            --host 127.0.0.1 \
+            --port 8080 \
+            > api.log 2>&1 &
+
+          API_PID=$!
+
+          echo "API PID: $API_PID"
+
+          echo "Waiting for API..."
+
+          for i in {1..30}; do
+
+            if curl -fsS http://127.0.0.1:8080/health > /dev/null 2>&1; then
+              echo "API is ready."
+              break
+            fi
+
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+              echo "API process stopped."
+
+              echo "========== API LOG =========="
+              cat api.log || true
+              echo "=============================="
+
+              exit 1
+            fi
+
+            echo "Waiting... attempt $i/30"
+
+            sleep 2
+          done
+
+          if ! curl -fsS http://127.0.0.1:8080/health > /dev/null 2>&1; then
+
+            echo "API did not start."
+
+            echo "========== API LOG =========="
+            cat api.log || true
+            echo "=============================="
+
+            exit 1
+          fi
+
+          echo "API started successfully."
+
+      # ==========================================
+      # 5. Запускаем Telegram-бота
+      # ==========================================
+      - name: Start Telegram Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+
+          # Бот обращается к API, который работает
+          # на этом же GitHub Actions runner.
+          API_BASE_URL: http://127.0.0.1:8080
+
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+
+        run: |
+          echo "Starting STALZONE Telegram Bot..."
+
+          python bot.py > bot.log 2>&1 &
+
+          BOT_PID=$!
+
+          echo "BOT PID: $BOT_PID"
+
+          # Если бот остановится — завершаем workflow.
+          wait "$BOT_PID"
+
+          STATUS=$?
+
+          echo "Bot stopped with status: $STATUS"
+
+          echo "========== BOT LOG =========="
+          cat bot.log || true
+          echo "=============================="
+
+          echo "========== API LOG =========="
+          cat api.log || true
+          echo "=============================="
+
+          exit "$STATUS"
