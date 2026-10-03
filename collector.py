@@ -33,6 +33,18 @@ COLLECT_INTERVAL = int(
     os.getenv("COLLECT_INTERVAL", "300")
 )
 
+# Если true — выполнить один цикл сбора и завершить процесс.
+# Это используется GitHub Actions.
+COLLECT_ONCE = os.getenv(
+    "COLLECT_ONCE",
+    "false"
+).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 REQUEST_DELAY = float(
     os.getenv("REQUEST_DELAY", "0.15")
 )
@@ -160,7 +172,6 @@ def normalize_string(
 
     if isinstance(value, dict):
 
-        # Сначала пробуем обычные варианты
         for key in (
             "ru",
             "name",
@@ -173,7 +184,6 @@ def normalize_string(
             if result:
                 return result
 
-        # Затем lines
         lines = value.get("lines")
 
         if isinstance(lines, dict):
@@ -268,7 +278,6 @@ def detect_json_rarity(
 
         key = obj.get("key")
 
-        # ВАЖНО:
         # key иногда является dict.
         # Поэтому обязательно проверяем isinstance(str),
         # иначе получим:
@@ -1033,14 +1042,12 @@ class AuctionCollector:
             )
 
             if data is None:
-
                 break
 
             lots = extract_lots(
                 data
             )
 
-            # Получаем total, если API его отдаёт
             if isinstance(
                 data,
                 dict,
@@ -1063,7 +1070,6 @@ class AuctionCollector:
                 f"received={len(lots)}"
             )
 
-            # Лотов больше нет
             if not lots:
                 break
 
@@ -1071,18 +1077,13 @@ class AuctionCollector:
                 lots
             )
 
-            # Если страница неполная —
-            # это последняя страница
             if len(lots) < AUCTION_PAGE_SIZE:
-
                 break
 
-            # Если знаем total и уже всё получили
             if (
                 total is not None
                 and len(all_lots) >= total
             ):
-
                 break
 
             offset += AUCTION_PAGE_SIZE
@@ -1148,7 +1149,6 @@ class AuctionCollector:
         """
 
         if not lots:
-
             return
 
         valid_lots: List[
@@ -1496,6 +1496,17 @@ class AuctionCollector:
                 "COLLECTION CYCLE END"
             )
 
+            # Для GitHub Actions:
+            # один цикл -> завершение процесса.
+            if COLLECT_ONCE:
+
+                print(
+                    "COLLECT ONCE | "
+                    "cycle complete, exiting"
+                )
+
+                break
+
             print(
                 f"NEXT CYCLE | "
                 f"in {COLLECT_INTERVAL}s"
@@ -1552,6 +1563,11 @@ async def main() -> None:
         print(
             f"COLLECT INTERVAL: "
             f"{COLLECT_INTERVAL}s"
+        )
+
+        print(
+            f"COLLECT ONCE: "
+            f"{COLLECT_ONCE}"
         )
 
         await collector.run()
