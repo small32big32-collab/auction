@@ -18,6 +18,38 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
 
+# ------------------------------------------------------------
+# PLATEGA
+# ------------------------------------------------------------
+
+PLATEGA_MERCHANT_ID = os.getenv(
+    "PLATEGA_MERCHANT_ID",
+    ""
+).strip()
+
+PLATEGA_SECRET = os.getenv(
+    "PLATEGA_SECRET",
+    ""
+).strip()
+
+PLATEGA_RETURN_URL = os.getenv(
+    "PLATEGA_RETURN_URL",
+    ""
+).strip()
+
+PLATEGA_FAILED_URL = os.getenv(
+    "PLATEGA_FAILED_URL",
+    ""
+).strip()
+
+PLATEGA_AMOUNT = 500
+PLATEGA_CURRENCY = "RUB"
+PLATEGA_LICENSE_DAYS = 30
+
+PLATEGA_API_URL = (
+    "https://app.platega.io/v2/transaction/process"
+)
+
 try:
     DEFAULT_LICENSE_DAYS = int(
         os.getenv("DEFAULT_LICENSE_DAYS", "30")
@@ -40,9 +72,8 @@ if not SUPABASE_KEY:
 
 if missing_variables:
     raise RuntimeError(
-        "Не настроены обязательные переменные Railway: "
+        "Не настроены обязательные переменные: "
         + ", ".join(missing_variables)
-        + ". Добавь их в Railway → Variables."
     )
 
 
@@ -55,6 +86,7 @@ try:
         SUPABASE_URL,
         SUPABASE_KEY
     )
+
 except Exception as e:
     raise RuntimeError(
         f"Не удалось подключиться к Supabase: {e}"
@@ -67,7 +99,7 @@ except Exception as e:
 
 app = FastAPI(
     title="Stalzone Auction API",
-    version="2.2"
+    version="2.3"
 )
 
 
@@ -93,22 +125,35 @@ class LicenseGenerate(BaseModel):
     days: Optional[int] = None
 
 
+class PlategaPaymentCreate(BaseModel):
+    telegram_id: int
+
+
 # ============================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-def clean_license_key(value: Optional[str]) -> str:
+def clean_license_key(
+    value: Optional[str]
+) -> str:
+
     if not value:
         return ""
 
     return str(value).strip()
 
 
-def clean_item_id(value: str) -> str:
+def clean_item_id(
+    value: str
+) -> str:
+
     return str(value).strip()
 
 
-def clean_rarity(value: Optional[str]) -> str:
+def clean_rarity(
+    value: Optional[str]
+) -> str:
+
     if not value:
         return "Обычный"
 
@@ -120,7 +165,10 @@ def clean_rarity(value: Optional[str]) -> str:
     return value
 
 
-def mask_license_key(value: str) -> str:
+def mask_license_key(
+    value: str
+) -> str:
+
     """
     Безопасный вывод ключа в лог.
     Полный ключ никогда не выводится.
@@ -142,6 +190,7 @@ def verify_license_key(
     license_key: str,
     telegram_id: Optional[int] = None
 ) -> str:
+
     """
     Возможные результаты:
 
@@ -159,7 +208,9 @@ def verify_license_key(
         Ошибка обращения к Supabase.
     """
 
-    license_key = clean_license_key(license_key)
+    license_key = clean_license_key(
+        license_key
+    )
 
     if not license_key:
         return "invalid"
@@ -175,7 +226,6 @@ def verify_license_key(
     # --------------------------------------------------------
     # Получаем лицензию
     #
-    # ВАЖНО:
     # В таблице licenses НЕТ поля id.
     # Поэтому здесь НЕ используем id.
     # --------------------------------------------------------
@@ -243,7 +293,9 @@ def verify_license_key(
     # Проверка срока действия
     # --------------------------------------------------------
 
-    expires_at_str = license_row.get("expires_at")
+    expires_at_str = license_row.get(
+        "expires_at"
+    )
 
     if expires_at_str:
 
@@ -267,12 +319,11 @@ def verify_license_key(
             if now >= expires_at:
 
                 print(
-                    "LICENSE INVALID | reason=expired | expires_at=%s"
+                    "LICENSE INVALID | "
+                    "reason=expired | expires_at=%s"
                     % expires_at
                 )
 
-                # В таблице licenses нет id.
-                # Обновляем по самому ключу.
                 try:
 
                     (
@@ -323,7 +374,9 @@ def verify_license_key(
     # Проверяем Telegram ID
     # --------------------------------------------------------
 
-    bound_id = license_row.get("telegram_id")
+    bound_id = license_row.get(
+        "telegram_id"
+    )
 
     # --------------------------------------------------------
     # Ключ ещё не привязан
@@ -371,7 +424,8 @@ def verify_license_key(
         if int(bound_id) != int(telegram_id):
 
             print(
-                "LICENSE REJECTED | bound_id=%s | request_id=%s"
+                "LICENSE REJECTED | "
+                "bound_id=%s | request_id=%s"
                 % (
                     bound_id,
                     telegram_id
@@ -409,6 +463,7 @@ def require_license(
     license_key: str,
     telegram_id: Optional[int] = None
 ):
+
     """
     Проверяет лицензию.
 
@@ -457,9 +512,10 @@ def require_license(
 def require_internal_api_key(
     x_internal_api_key: Optional[str]
 ):
+
     """
-    Проверка внутреннего ключа для
-    административных endpoint'ов.
+    Проверка внутреннего ключа
+    для административных endpoint'ов.
     """
 
     if not INTERNAL_API_KEY:
@@ -467,8 +523,7 @@ def require_internal_api_key(
         raise HTTPException(
             status_code=500,
             detail=(
-                "INTERNAL_API_KEY не настроен "
-                "в Railway Variables."
+                "INTERNAL_API_KEY не настроен."
             )
         )
 
@@ -482,7 +537,10 @@ def require_internal_api_key(
 
         raise HTTPException(
             status_code=401,
-            detail="Недействительный внутренний API ключ."
+            detail=(
+                "Недействительный "
+                "внутренний API ключ."
+            )
         )
 
 
@@ -543,7 +601,7 @@ def read_root():
     return {
         "status": "ok",
         "message": "Stalzone Auction API Running",
-        "version": "2.2"
+        "version": "2.3"
     }
 
 
@@ -557,7 +615,7 @@ def health():
 
     return {
         "status": "ok",
-        "version": "2.2"
+        "version": "2.3"
     }
 
 
@@ -628,7 +686,7 @@ def generate_license(
                 .execute()
             )
 
-        except Exception as e:
+        except Exception:
 
             raise HTTPException(
                 status_code=500,
@@ -648,7 +706,8 @@ def generate_license(
         raise HTTPException(
             status_code=500,
             detail=(
-                "Не удалось создать уникальный ключ."
+                "Не удалось создать "
+                "уникальный ключ."
             )
         )
 
@@ -691,6 +750,444 @@ def generate_license(
 
 
 # ============================================================
+# PLATEGA — СОЗДАНИЕ ПЛАТЕЖА
+# ============================================================
+
+@app.post("/payments/platega")
+@app.post("/api/v1/payments/platega")
+async def create_platega_payment(
+    data: PlategaPaymentCreate,
+    x_internal_api_key: Optional[str] = Header(
+        default=None
+    )
+):
+
+    """
+    Создаёт платёж Platega:
+
+    500 RUB
+    30 дней лицензии
+
+    Бот передаёт Telegram ID.
+    Merchant ID и Secret берутся
+    из GitHub Secrets.
+    """
+
+    require_internal_api_key(
+        x_internal_api_key
+    )
+
+    if data.telegram_id <= 0:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Некорректный telegram_id."
+        )
+
+    # --------------------------------------------------------
+    # Проверяем настройки Platega
+    # --------------------------------------------------------
+
+    missing = []
+
+    if not PLATEGA_MERCHANT_ID:
+        missing.append(
+            "PLATEGA_MERCHANT_ID"
+        )
+
+    if not PLATEGA_SECRET:
+        missing.append(
+            "PLATEGA_SECRET"
+        )
+
+    if not PLATEGA_RETURN_URL:
+        missing.append(
+            "PLATEGA_RETURN_URL"
+        )
+
+    if not PLATEGA_FAILED_URL:
+        missing.append(
+            "PLATEGA_FAILED_URL"
+        )
+
+    if missing:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Не настроены переменные Platega: "
+                + ", ".join(missing)
+            )
+        )
+
+    # --------------------------------------------------------
+    # Создаём лицензионный ключ
+    # --------------------------------------------------------
+
+    new_key = None
+
+    for _ in range(10):
+
+        candidate = (
+            "STZ-"
+            + secrets.token_hex(8).upper()
+        )
+
+        try:
+
+            existing = (
+                supabase
+                .table("licenses")
+                .select("key")
+                .eq(
+                    "key",
+                    candidate
+                )
+                .limit(1)
+                .execute()
+            )
+
+        except Exception as e:
+
+            print(
+                "❌ PLATEGA LICENSE CHECK ERROR | %s"
+                % e
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Ошибка проверки "
+                    "лицензионного ключа."
+                )
+            )
+
+        if not existing.data:
+
+            new_key = candidate
+            break
+
+    if not new_key:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Не удалось создать "
+                "уникальный лицензионный ключ."
+            )
+        )
+
+    # --------------------------------------------------------
+    # Создаём НЕАКТИВНУЮ лицензию
+    # --------------------------------------------------------
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    try:
+
+        (
+            supabase
+            .table("licenses")
+            .insert({
+                "key": new_key,
+                "is_active": False,
+                "expires_at": now.isoformat(),
+                "telegram_id": data.telegram_id
+            })
+            .execute()
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ PLATEGA LICENSE CREATE ERROR | %s"
+            % e
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Не удалось создать "
+                "лицензию для платежа."
+            )
+        )
+
+    # --------------------------------------------------------
+    # Формируем запрос Platega
+    # --------------------------------------------------------
+
+    payload = {
+
+        "paymentDetails": {
+            "amount": PLATEGA_AMOUNT,
+            "currency": PLATEGA_CURRENCY
+        },
+
+        "description": (
+            "Stalzone — лицензия на 30 дней"
+        ),
+
+        "return": PLATEGA_RETURN_URL,
+
+        "failedUrl": PLATEGA_FAILED_URL,
+
+        "payload": new_key,
+
+        "metadata": {
+            "userId": str(
+                data.telegram_id
+            )
+        }
+    }
+
+    headers = {
+
+        "X-MerchantId":
+            PLATEGA_MERCHANT_ID,
+
+        "X-Secret":
+            PLATEGA_SECRET,
+
+        "Content-Type":
+            "application/json"
+    }
+
+    # --------------------------------------------------------
+    # Отправляем запрос Platega
+    # --------------------------------------------------------
+
+    try:
+
+        async with httpx.AsyncClient(
+            timeout=30.0
+        ) as client:
+
+            response = await client.post(
+                PLATEGA_API_URL,
+                json=payload,
+                headers=headers
+            )
+
+    except Exception as e:
+
+        print(
+            "❌ PLATEGA REQUEST ERROR | %s"
+            % e
+        )
+
+        # Удаляем неподтверждённую лицензию
+        try:
+
+            (
+                supabase
+                .table("licenses")
+                .delete()
+                .eq(
+                    "key",
+                    new_key
+                )
+                .execute()
+            )
+
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Не удалось подключиться "
+                "к Platega."
+            )
+        )
+
+    # --------------------------------------------------------
+    # Проверяем ответ Platega
+    # --------------------------------------------------------
+
+    if response.status_code not in (
+        200,
+        201
+    ):
+
+        print(
+            "❌ PLATEGA ERROR | "
+            "status=%s | body=%s"
+            % (
+                response.status_code,
+                response.text
+            )
+        )
+
+        try:
+
+            (
+                supabase
+                .table("licenses")
+                .delete()
+                .eq(
+                    "key",
+                    new_key
+                )
+                .execute()
+            )
+
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Platega не создала платёж."
+            )
+        )
+
+    # --------------------------------------------------------
+    # JSON
+    # --------------------------------------------------------
+
+    try:
+
+        result = response.json()
+
+    except Exception:
+
+        print(
+            "❌ PLATEGA INVALID JSON | %s"
+            % response.text
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Platega вернула "
+                "некорректный ответ."
+            )
+        )
+
+    transaction_id = result.get(
+        "transactionId"
+    )
+
+    payment_url = result.get(
+        "url"
+    )
+
+    if not transaction_id:
+
+        print(
+            "❌ PLATEGA NO TRANSACTION ID | %s"
+            % result
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Platega не вернула "
+                "transactionId."
+            )
+        )
+
+    if not payment_url:
+
+        print(
+            "❌ PLATEGA NO PAYMENT URL | %s"
+            % result
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Platega не вернула "
+                "ссылку на оплату."
+            )
+        )
+
+    # --------------------------------------------------------
+    # Сохраняем платёж в Supabase
+    # --------------------------------------------------------
+
+    try:
+
+        (
+            supabase
+            .table("payments")
+            .insert({
+                "transaction_id":
+                    transaction_id,
+
+                "telegram_id":
+                    data.telegram_id,
+
+                "license_key":
+                    new_key,
+
+                "amount":
+                    PLATEGA_AMOUNT,
+
+                "currency":
+                    PLATEGA_CURRENCY,
+
+                "status":
+                    "PENDING"
+            })
+            .execute()
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ PAYMENT DB ERROR | %s"
+            % e
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Платёж создан, но не удалось "
+                "сохранить его в базе."
+            )
+        )
+
+    print(
+        "PLATEGA PAYMENT CREATED | "
+        "telegram_id=%s | transaction_id=%s"
+        % (
+            data.telegram_id,
+            transaction_id
+        )
+    )
+
+    return {
+
+        "status":
+            "success",
+
+        "transaction_id":
+            transaction_id,
+
+        "payment_url":
+            payment_url,
+
+        "license_key":
+            new_key,
+
+        "amount":
+            PLATEGA_AMOUNT,
+
+        "currency":
+            PLATEGA_CURRENCY,
+
+        "days":
+            PLATEGA_LICENSE_DAYS,
+
+        "expires_in":
+            result.get("expiresIn")
+    }
+
+
+# ============================================================
 # КАТАЛОГ
 # ============================================================
 
@@ -717,7 +1214,7 @@ def get_items_by_key(
     )
 
     # --------------------------------------------------------
-    # Основной источник каталога — items
+    # Основной источник каталога
     # --------------------------------------------------------
 
     try:
@@ -756,7 +1253,9 @@ def get_items_by_key(
 
         for row in history_rows:
 
-            item_id = row.get("item_id")
+            item_id = row.get(
+                "item_id"
+            )
 
             if not item_id:
                 continue
@@ -771,25 +1270,41 @@ def get_items_by_key(
 
             if composite_key not in unique_items:
 
-                unique_items[composite_key] = {
-                    "item_id": item_id,
-                    "id": item_id,
-                    "name": (
-                        row.get("item_name")
-                        or item_id
-                    ),
-                    "rarity": rarity,
-                    "category": (
-                        row.get("category")
-                        or "Разное"
-                    )
+                unique_items[
+                    composite_key
+                ] = {
+
+                    "item_id":
+                        item_id,
+
+                    "id":
+                        item_id,
+
+                    "name":
+                        (
+                            row.get("item_name")
+                            or item_id
+                        ),
+
+                    "rarity":
+                        rarity,
+
+                    "category":
+                        (
+                            row.get("category")
+                            or "Разное"
+                        )
                 }
 
         return {
-            "status": "success",
-            "data": list(
-                unique_items.values()
-            )[:limit]
+
+            "status":
+                "success",
+
+            "data":
+                list(
+                    unique_items.values()
+                )[:limit]
         }
 
     except Exception as e:
@@ -820,7 +1335,8 @@ def get_item_price(
         raise HTTPException(
             status_code=401,
             detail=(
-                "Необходимо передать license_key."
+                "Необходимо передать "
+                "license_key."
             )
         )
 
@@ -841,7 +1357,10 @@ def get_item_price(
 
         raise HTTPException(
             status_code=400,
-            detail="item_id не может быть пустым."
+            detail=(
+                "item_id не может "
+                "быть пустым."
+            )
         )
 
     try:
@@ -876,21 +1395,31 @@ def get_item_price(
             row = response.data[0]
 
             return {
-                "status": "success",
-                "min_price": row.get(
-                    "min_buyout_price"
-                ),
-                "item_name": (
-                    row.get("item_name")
-                    or item_id
-                ),
-                "rarity": (
-                    row.get("rarity")
-                    or rarity
-                ),
-                "created_at": row.get(
-                    "created_at"
-                )
+
+                "status":
+                    "success",
+
+                "min_price":
+                    row.get(
+                        "min_buyout_price"
+                    ),
+
+                "item_name":
+                    (
+                        row.get("item_name")
+                        or item_id
+                    ),
+
+                "rarity":
+                    (
+                        row.get("rarity")
+                        or rarity
+                    ),
+
+                "created_at":
+                    row.get(
+                        "created_at"
+                    )
             }
 
     except Exception as e:
@@ -901,10 +1430,18 @@ def get_item_price(
         )
 
     return {
-        "status": "success",
-        "min_price": None,
-        "item_name": item_id,
-        "rarity": rarity
+
+        "status":
+            "success",
+
+        "min_price":
+            None,
+
+        "item_name":
+            item_id,
+
+        "rarity":
+            rarity
     }
 
 
@@ -955,8 +1492,12 @@ def get_history_by_key(
         )
 
         return {
-            "status": "success",
-            "data": response.data or []
+
+            "status":
+                "success",
+
+            "data":
+                response.data or []
         }
 
     except Exception as e:
@@ -964,7 +1505,8 @@ def get_history_by_key(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка получения истории: {e}"
+                f"Ошибка получения "
+                f"истории: {e}"
             )
         )
 
@@ -1011,23 +1553,38 @@ def create_sniper(
 
         raise HTTPException(
             status_code=400,
-            detail="item_id не может быть пустым."
+            detail=(
+                "item_id не может "
+                "быть пустым."
+            )
         )
 
     if not item_name:
         item_name = item_id
 
     payload = {
-        "user_id": data.user_id,
-        "license_key": clean_license_key(
-            data.license_key
-        ),
-        "item_id": item_id,
-        "item_name": item_name,
-        "rarity": rarity,
-        "threshold": float(
-            data.threshold
-        )
+
+        "user_id":
+            data.user_id,
+
+        "license_key":
+            clean_license_key(
+                data.license_key
+            ),
+
+        "item_id":
+            item_id,
+
+        "item_name":
+            item_name,
+
+        "rarity":
+            rarity,
+
+        "threshold":
+            float(
+                data.threshold
+            )
     }
 
     try:
@@ -1040,8 +1597,12 @@ def create_sniper(
         )
 
         return {
-            "status": "success",
-            "data": response.data
+
+            "status":
+                "success",
+
+            "data":
+                response.data
         }
 
     except Exception as e:
@@ -1049,7 +1610,8 @@ def create_sniper(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка сохранения снайпера: {e}"
+                f"Ошибка сохранения "
+                f"снайпера: {e}"
             )
         )
 
@@ -1072,7 +1634,8 @@ def get_snipers(
         raise HTTPException(
             status_code=401,
             detail=(
-                "Необходимо передать license_key."
+                "Необходимо передать "
+                "license_key."
             )
         )
 
@@ -1101,8 +1664,12 @@ def get_snipers(
         )
 
         return {
-            "status": "success",
-            "data": response.data or []
+
+            "status":
+                "success",
+
+            "data":
+                response.data or []
         }
 
     except Exception as e:
@@ -1110,7 +1677,8 @@ def get_snipers(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка получения снайперов: {e}"
+                f"Ошибка получения "
+                f"снайперов: {e}"
             )
         )
 
@@ -1134,7 +1702,8 @@ def update_sniper_threshold(
         raise HTTPException(
             status_code=401,
             detail=(
-                "Необходимо передать license_key."
+                "Необходимо передать "
+                "license_key."
             )
         )
 
@@ -1170,7 +1739,8 @@ def update_sniper_threshold(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка поиска снайпера: {e}"
+                f"Ошибка поиска "
+                f"снайпера: {e}"
             )
         )
 
@@ -1203,8 +1773,12 @@ def update_sniper_threshold(
         )
 
         return {
-            "status": "success",
-            "data": response.data
+
+            "status":
+                "success",
+
+            "data":
+                response.data
         }
 
     except Exception as e:
@@ -1212,7 +1786,8 @@ def update_sniper_threshold(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка обновления снайпера: {e}"
+                f"Ошибка обновления "
+                f"снайпера: {e}"
             )
         )
 
@@ -1235,7 +1810,8 @@ def delete_single_sniper(
         raise HTTPException(
             status_code=401,
             detail=(
-                "Необходимо передать license_key."
+                "Необходимо передать "
+                "license_key."
             )
         )
 
@@ -1289,8 +1865,12 @@ def delete_single_sniper(
         )
 
         return {
-            "status": "success",
-            "data": response.data
+
+            "status":
+                "success",
+
+            "data":
+                response.data
         }
 
     except HTTPException:
@@ -1301,7 +1881,8 @@ def delete_single_sniper(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка удаления снайпера: {e}"
+                f"Ошибка удаления "
+                f"снайпера: {e}"
             )
         )
 
@@ -1324,7 +1905,8 @@ def delete_all_user_snipers(
         raise HTTPException(
             status_code=401,
             detail=(
-                "Необходимо передать license_key."
+                "Необходимо передать "
+                "license_key."
             )
         )
 
@@ -1355,8 +1937,12 @@ def delete_all_user_snipers(
         )
 
         return {
-            "status": "success",
-            "data": response.data
+
+            "status":
+                "success",
+
+            "data":
+                response.data
         }
 
     except Exception as e:
@@ -1364,7 +1950,8 @@ def delete_all_user_snipers(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Ошибка удаления снайперов: {e}"
+                f"Ошибка удаления "
+                f"снайперов: {e}"
             )
         )
 
@@ -1381,7 +1968,10 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=int(
-            os.getenv("PORT", "8000")
+            os.getenv(
+                "PORT",
+                "8000"
+            )
         ),
         reload=False
     )
