@@ -54,6 +54,11 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
 
+          PLATEGA_MERCHANT_ID: ${{ secrets.PLATEGA_MERCHANT_ID }}
+          PLATEGA_SECRET: ${{ secrets.PLATEGA_SECRET }}
+          PLATEGA_RETURN_URL: ${{ secrets.PLATEGA_RETURN_URL }}
+          PLATEGA_FAILED_URL: ${{ secrets.PLATEGA_FAILED_URL }}
+
         run: |
           echo "Starting STALZONE API..."
 
