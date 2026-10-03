@@ -31,31 +31,24 @@ logging.basicConfig(
 # НАСТРОЙКИ
 # ============================================================
 
-# ОСТАВЬ ЗДЕСЬ СВОЙ ТЕКУЩИЙ BOT_TOKEN.
-# Я намеренно не вывожу реальный токен в ответе.
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    "8877726623:AAEV6YFhuuBnzKWiJZxwiWM49khiaxazwRE"
-)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
+
+
+# В GitHub Actions bot.py и main.py работают
+# на одном runner, поэтому API доступен локально.
 API_BASE_URL = os.getenv(
     "API_BASE_URL",
-    "https://auction-production-a352.up.railway.app"
+    "http://127.0.0.1:8080"
 ).rstrip("/")
 
 
-# ------------------------------------------------------------
-# Внутренний ключ для main.py
-# ------------------------------------------------------------
-#
-# ДОЛЖЕН БЫТЬ ТОЧНО ТАКИМ ЖЕ, КАК INTERNAL_API_KEY В main.py.
-#
-# Я не вывожу реальное значение из репозитория.
-#
-INTERNAL_API_KEY = os.getenv(
-    "INTERNAL_API_KEY",
-    "GOIDA_ZAPRET"
-)
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+
+if not INTERNAL_API_KEY:
+    raise RuntimeError("INTERNAL_API_KEY is not set")
 
 
 # ============================================================
@@ -65,11 +58,29 @@ INTERNAL_API_KEY = os.getenv(
 SUPPORT_TGG = "https://t.me/montastaile_life"
 SUPPORT_TG = "https://t.me/ungdaddy"
 
-# Platega оставлена без изменений.
-PLATEGA_PAY_URL = "https://platega.com/pay/your_link"
+TERMS_URL = (
+    "https://telegra.ph/"
+    "Polzovatelskoe-soglashenie-08-25-64"
+)
 
-TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-25-64"
-PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
+PRIVACY_URL = (
+    "https://telegra.ph/"
+    "Politika-konfidencialnosti-08-25-84"
+)
+
+
+# ============================================================
+# ОПЛАТА
+# ============================================================
+
+# Telegram Stars
+STARS_PRICE = 250
+
+# Platega
+PLATEGA_PRICE = 500
+
+# Срок лицензии
+LICENSE_DAYS = 30
 
 
 # ============================================================
@@ -77,9 +88,6 @@ PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-25-84"
 # ============================================================
 
 ITEMS_PER_PAGE = 10
-
-STARS_PRICE = 250
-LICENSE_DAYS = 30
 
 HTTP_TIMEOUT = 10.0
 
@@ -89,7 +97,10 @@ HTTP_TIMEOUT = 10.0
 # ============================================================
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+
+dp = Dispatcher(
+    storage=MemoryStorage()
+)
 
 
 # ============================================================
@@ -158,10 +169,12 @@ def parse_price(text: str):
 async def api_error_text(response):
     try:
         data = response.json()
+
         detail = data.get("detail")
 
         if detail:
             return str(detail)
+
     except Exception:
         pass
 
@@ -184,7 +197,7 @@ def get_buy_options_keyboard():
             [
                 InlineKeyboardButton(
                     text="💳 Оплатить через Platega",
-                    url=PLATEGA_PAY_URL
+                    callback_data="buy_platega"
                 )
             ],
             [
@@ -368,7 +381,7 @@ async def start_cmd(
     license_key = user_sessions.get(user_id)
 
     if license_key:
-        # Дополнительно проверяем, что ключ всё ещё действителен.
+
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.get(
@@ -382,13 +395,20 @@ async def start_cmd(
 
                 if response.status_code == 200:
                     await state.clear()
-                    await send_main_menu(message)
+
+                    await send_main_menu(
+                        message
+                    )
+
                     return
 
             except Exception:
                 pass
 
-        user_sessions.pop(user_id, None)
+        user_sessions.pop(
+            user_id,
+            None
+        )
 
     await state.set_state(
         AuthState.waiting_for_key
@@ -416,6 +436,7 @@ async def process_license_key(
         return
 
     license_key = message.text.strip()
+
     user_id = message.from_user.id
 
     if not license_key:
@@ -436,6 +457,7 @@ async def process_license_key(
             )
 
             if response.status_code == 200:
+
                 user_sessions[user_id] = license_key
 
                 await state.clear()
@@ -450,6 +472,7 @@ async def process_license_key(
                 return
 
             if response.status_code == 409:
+
                 await message.answer(
                     "⛔ **Этот ключ уже привязан "
                     "к другому Telegram-аккаунту!**\n\n"
@@ -457,9 +480,11 @@ async def process_license_key(
                     reply_markup=get_auth_inline_menu(),
                     parse_mode="Markdown"
                 )
+
                 return
 
             if response.status_code == 403:
+
                 await message.answer(
                     "❌ **Неверный или просроченный ключ.**\n\n"
                     "Попробуйте ввести другой ключ "
@@ -467,21 +492,24 @@ async def process_license_key(
                     reply_markup=get_auth_inline_menu(),
                     parse_mode="Markdown"
                 )
+
                 return
 
             await message.answer(
-                f"⚠️ Не удалось проверить ключ.\n\n"
+                "⚠️ Не удалось проверить ключ.\n\n"
                 f"{await api_error_text(response)}",
                 reply_markup=get_auth_inline_menu()
             )
 
         except httpx.TimeoutException:
+
             await message.answer(
                 "⏱ Сервер слишком долго отвечает. "
                 "Попробуйте ещё раз."
             )
 
         except httpx.RequestError as e:
+
             logging.error(
                 "Ошибка подключения при авторизации: %s",
                 e
@@ -492,7 +520,8 @@ async def process_license_key(
                 "Попробуйте позже."
             )
 
-        except Exception as e:
+        except Exception:
+
             logging.exception(
                 "Неожиданная ошибка авторизации"
             )
@@ -513,12 +542,161 @@ async def open_buy_menu_handler(
     await callback.message.edit_text(
         "💳 **Выберите удобный способ оплаты ключа доступа:**\n\n"
         "• **Telegram Stars** — оплата прямо внутри мессенджера.\n"
-        "• **Platega** — оплата банковскими картами и СБП.",
+        "• **Platega** — оплата банковскими картами и СБП.\n\n"
+        f"Стоимость Platega: **{PLATEGA_PRICE} ₽ / "
+        f"{LICENSE_DAYS} дней**.",
         reply_markup=get_buy_options_keyboard(),
         parse_mode="Markdown"
     )
 
     await callback.answer()
+
+
+# ============================================================
+# PLATEGA
+# ============================================================
+
+@dp.callback_query(F.data == "buy_platega")
+async def buy_platega_handler(
+    callback: types.CallbackQuery
+):
+    user_id = callback.from_user.id
+
+    headers = {
+        "X-Internal-API-Key": INTERNAL_API_KEY
+    }
+
+    payload = {
+        "telegram_id": user_id,
+        "days": LICENSE_DAYS,
+        "amount": PLATEGA_PRICE
+    }
+
+    await callback.answer(
+        "⏳ Создаём платёж..."
+    )
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{API_BASE_URL}/payments/platega",
+                json=payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
+            if response.status_code != 200:
+
+                logging.error(
+                    "PLATEGA API ERROR | HTTP %s | %s",
+                    response.status_code,
+                    response.text
+                )
+
+                await callback.message.answer(
+                    "❌ Не удалось создать платёж.\n\n"
+                    f"{await api_error_text(response)}"
+                )
+
+                return
+
+            data = response.json()
+
+            payment_url = data.get(
+                "payment_url"
+            )
+
+            if not payment_url:
+
+                logging.error(
+                    "PLATEGA NO PAYMENT URL | %s",
+                    data
+                )
+
+                await callback.message.answer(
+                    "❌ Платёж создан некорректно. "
+                    "Ссылка на оплату не получена.\n\n"
+                    "Обратитесь в техническую поддержку."
+                )
+
+                return
+
+            transaction_id = data.get(
+                "transaction_id"
+            )
+
+            logging.info(
+                "PLATEGA PAYMENT CREATED | "
+                "user=%s | transaction=%s",
+                user_id,
+                transaction_id
+            )
+
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="💳 Перейти к оплате",
+                            url=payment_url
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Назад",
+                            callback_data="open_buy_menu"
+                        )
+                    ]
+                ]
+            )
+
+            await callback.message.edit_text(
+                "💳 **Оплата через Platega**\n\n"
+                f"Стоимость: **{PLATEGA_PRICE} ₽**\n"
+                f"Срок действия: **{LICENSE_DAYS} дней**\n\n"
+                "Нажмите кнопку ниже, чтобы перейти "
+                "к оплате.\n\n"
+                "После подтверждения платежа ключ "
+                "будет активирован автоматически.",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+
+        except httpx.TimeoutException:
+
+            logging.error(
+                "PLATEGA TIMEOUT | user=%s",
+                user_id
+            )
+
+            await callback.message.answer(
+                "⏱ Сервис оплаты слишком долго отвечает.\n\n"
+                "Попробуйте ещё раз через некоторое время."
+            )
+
+        except httpx.RequestError as e:
+
+            logging.error(
+                "PLATEGA REQUEST ERROR | user=%s | %s",
+                user_id,
+                e
+            )
+
+            await callback.message.answer(
+                "⚠️ Не удалось подключиться к сервису оплаты.\n\n"
+                "Попробуйте ещё раз позже."
+            )
+
+        except Exception:
+
+            logging.exception(
+                "PLATEGA UNEXPECTED ERROR | user=%s",
+                user_id
+            )
+
+            await callback.message.answer(
+                "⚠️ Произошла ошибка при создании платежа.\n\n"
+                "Обратитесь в техническую поддержку."
+            )
 
 
 # ============================================================
@@ -564,15 +742,6 @@ async def pre_checkout_handler(
 async def successful_payment_handler(
     message: types.Message
 ):
-    """
-    После успешной оплаты Stars:
-    1. Проверяем payload.
-    2. Запрашиваем у main.py новую лицензию.
-    3. Передаём INTERNAL_API_KEY.
-    4. Получаем уникальный STZ-ключ.
-    5. Сохраняем его в сессии.
-    """
-
     payment = message.successful_payment
 
     if not payment:
@@ -582,6 +751,7 @@ async def successful_payment_handler(
         return
 
     if payment.invoice_payload != "license_key_30_days":
+
         logging.warning(
             "Неизвестный payload платежа: %s",
             payment.invoice_payload
@@ -590,6 +760,7 @@ async def successful_payment_handler(
         await message.answer(
             "⚠️ Неизвестный тип платежа."
         )
+
         return
 
     user_id = message.from_user.id
@@ -605,6 +776,7 @@ async def successful_payment_handler(
 
     async with httpx.AsyncClient() as client:
         try:
+
             response = await client.post(
                 f"{API_BASE_URL}/licenses/generate",
                 json=payload,
@@ -613,8 +785,10 @@ async def successful_payment_handler(
             )
 
             if response.status_code != 200:
+
                 logging.error(
-                    "Ошибка генерации лицензии: HTTP %s: %s",
+                    "Ошибка генерации лицензии: "
+                    "HTTP %s: %s",
                     response.status_code,
                     response.text
                 )
@@ -624,13 +798,17 @@ async def successful_payment_handler(
                     "но при создании ключа произошла ошибка.\n\n"
                     "Обратитесь в техническую поддержку."
                 )
+
                 return
 
             data = response.json()
 
-            new_key = data.get("key")
+            new_key = data.get(
+                "key"
+            )
 
             if not new_key:
+
                 logging.error(
                     "API не вернул ключ: %s",
                     data
@@ -641,6 +819,7 @@ async def successful_payment_handler(
                     "но сервер не вернул ключ.\n\n"
                     "Обратитесь в техническую поддержку."
                 )
+
                 return
 
             expires_at = data.get(
@@ -661,6 +840,7 @@ async def successful_payment_handler(
             )
 
         except httpx.TimeoutException:
+
             logging.error(
                 "Timeout при генерации лицензии"
             )
@@ -672,6 +852,7 @@ async def successful_payment_handler(
             )
 
         except httpx.RequestError as e:
+
             logging.error(
                 "Ошибка сети при генерации лицензии: %s",
                 e
@@ -684,6 +865,7 @@ async def successful_payment_handler(
             )
 
         except Exception:
+
             logging.exception(
                 "Ошибка после успешной оплаты"
             )
@@ -738,14 +920,19 @@ async def to_main_menu_handler(
     user_id = callback.from_user.id
 
     if user_id not in user_sessions:
+
         await callback.message.edit_text(
             "🔑 **Авторизация в Stalzone**\n\n"
             "Пожалуйста, введите ваш ключ доступа:",
             reply_markup=get_auth_inline_menu(),
             parse_mode="Markdown"
         )
+
     else:
-        await send_main_menu(callback)
+
+        await send_main_menu(
+            callback
+        )
 
     await callback.answer()
 
@@ -762,24 +949,35 @@ async def show_catalog_callback(
     await state.clear()
 
     user_id = callback.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await callback.answer(
             "⚠️ Сначала введите ключ доступа!",
             show_alert=True
         )
+
         return
 
     parts = callback.data.split(":")
 
     try:
-        page = int(parts[1]) if len(parts) > 1 else 0
+        page = (
+            int(parts[1])
+            if len(parts) > 1
+            else 0
+        )
     except ValueError:
         page = 0
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.get(
                 f"{API_BASE_URL}/items/{license_key}",
                 params={
@@ -790,10 +988,13 @@ async def show_catalog_callback(
             )
 
             if response.status_code != 200:
+
                 await callback.message.answer(
                     await api_error_text(response)
                 )
+
                 await callback.answer()
+
                 return
 
             items = response.json().get(
@@ -802,6 +1003,7 @@ async def show_catalog_callback(
             )
 
         except Exception as e:
+
             logging.error(
                 "Ошибка загрузки каталога: %s",
                 e
@@ -810,10 +1012,13 @@ async def show_catalog_callback(
             await callback.message.answer(
                 "⚠️ Ошибка загрузки каталога."
             )
+
             await callback.answer()
+
             return
 
     if not items:
+
         await callback.message.edit_text(
             "📦 Каталог предметов пуст.",
             reply_markup=InlineKeyboardMarkup(
@@ -829,12 +1034,15 @@ async def show_catalog_callback(
         )
 
         await callback.answer()
+
         return
 
     unique_items = []
+
     seen_ids = set()
 
     for item in items:
+
         item_id = (
             item.get("item_id")
             or item.get("id")
@@ -843,12 +1051,16 @@ async def show_catalog_callback(
         if not item_id:
             continue
 
-        item_id = str(item_id)
+        item_id = str(
+            item_id
+        )
 
         if item_id in seen_ids:
             continue
 
-        seen_ids.add(item_id)
+        seen_ids.add(
+            item_id
+        )
 
         item_name = (
             item.get("name")
@@ -863,7 +1075,9 @@ async def show_catalog_callback(
             )
         )
 
-    total_items = len(unique_items)
+    total_items = len(
+        unique_items
+    )
 
     total_pages = max(
         1,
@@ -900,6 +1114,7 @@ async def show_catalog_callback(
     builder = InlineKeyboardBuilder()
 
     for item_id, name in page_items:
+
         builder.button(
             text=f"🔮 {name}",
             callback_data=f"select_item:{item_id}"
@@ -910,6 +1125,7 @@ async def show_catalog_callback(
     nav_buttons = []
 
     if page > 0:
+
         nav_buttons.append(
             InlineKeyboardButton(
                 text="⬅️ Назад",
@@ -918,6 +1134,7 @@ async def show_catalog_callback(
         )
 
     if page < total_pages - 1:
+
         nav_buttons.append(
             InlineKeyboardButton(
                 text="Вперед ➡️",
@@ -926,7 +1143,10 @@ async def show_catalog_callback(
         )
 
     if nav_buttons:
-        builder.row(*nav_buttons)
+
+        builder.row(
+            *nav_buttons
+        )
 
     builder.row(
         InlineKeyboardButton(
@@ -963,19 +1183,26 @@ async def select_item_info(
     )[1]
 
     user_id = callback.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await callback.answer(
             "⚠️ Сначала авторизуйтесь.",
             show_alert=True
         )
+
         return
 
     item_name = item_id
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.get(
                 f"{API_BASE_URL}/items/{license_key}",
                 params={
@@ -986,6 +1213,7 @@ async def select_item_info(
             )
 
             if response.status_code == 200:
+
                 items = response.json().get(
                     "data",
                     []
@@ -998,6 +1226,7 @@ async def select_item_info(
                 )
 
                 for item in items:
+
                     raw_id = str(
                         item.get("item_id")
                         or item.get("id")
@@ -1005,11 +1234,13 @@ async def select_item_info(
                     ).strip().lower()
 
                     if raw_id == target:
+
                         item_name = (
                             item.get("name")
                             or item.get("item_name")
                             or item_id
                         )
+
                         break
 
         except Exception:
@@ -1045,30 +1276,41 @@ async def set_rarity_and_ask_price(
     parts = callback.data.split(":")
 
     if len(parts) < 3:
+
         await callback.answer(
             "⚠️ Некорректный выбор.",
             show_alert=True
         )
+
         return
 
     item_id = parts[1]
+
     rarity = parts[2]
 
     user_id = callback.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await callback.answer(
             "⚠️ Сначала авторизуйтесь.",
             show_alert=True
         )
+
         return
 
     item_name = item_id
+
     min_price = None
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.get(
                 f"{API_BASE_URL}/items/{item_id}/price",
                 params={
@@ -1080,6 +1322,7 @@ async def set_rarity_and_ask_price(
             )
 
             if response.status_code == 200:
+
                 price_data = response.json()
 
                 min_price = (
@@ -1093,7 +1336,7 @@ async def set_rarity_and_ask_price(
                 )
 
             else:
-                # Резервный поиск названия предмета.
+
                 catalog_response = await client.get(
                     f"{API_BASE_URL}/items/{license_key}",
                     params={
@@ -1104,6 +1347,7 @@ async def set_rarity_and_ask_price(
                 )
 
                 if catalog_response.status_code == 200:
+
                     items = catalog_response.json().get(
                         "data",
                         []
@@ -1122,6 +1366,7 @@ async def set_rarity_and_ask_price(
                     )
 
                     for item in items:
+
                         raw_id = str(
                             item.get("item_id")
                             or item.get("id")
@@ -1157,6 +1402,7 @@ async def set_rarity_and_ask_price(
                         break
 
         except Exception as e:
+
             logging.error(
                 "Ошибка получения цены: %s",
                 e
@@ -1213,24 +1459,31 @@ async def set_sniper_price(
     )
 
     if price is None:
+
         await message.answer(
             "⚠️ Пожалуйста, введите корректную "
             "положительную цену.\n\n"
             "Например: `350000`",
             parse_mode="Markdown"
         )
+
         return
 
     user_id = message.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await state.clear()
 
         await message.answer(
             "⚠️ Ваша сессия авторизации закончилась.\n"
             "Введите ключ заново."
         )
+
         return
 
     data = await state.get_data()
@@ -1250,11 +1503,13 @@ async def set_sniper_price(
     )
 
     if not item_id:
+
         await state.clear()
 
         await message.answer(
             "⚠️ Не удалось определить предмет."
         )
+
         return
 
     payload = {
@@ -1267,7 +1522,9 @@ async def set_sniper_price(
     }
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.post(
                 f"{API_BASE_URL}/snipers",
                 params={
@@ -1278,6 +1535,7 @@ async def set_sniper_price(
             )
 
             if response.status_code == 200:
+
                 await message.answer(
                     "✅ **Снайпер установлен!**\n\n"
                     f"Предмет: **{item_name}**\n"
@@ -1288,7 +1546,11 @@ async def set_sniper_price(
                 )
 
                 await state.clear()
-                await send_main_menu(message)
+
+                await send_main_menu(
+                    message
+                )
+
                 return
 
             logging.error(
@@ -1303,6 +1565,7 @@ async def set_sniper_price(
             )
 
         except Exception as e:
+
             logging.error(
                 "Ошибка сети при создании снайпера: %s",
                 e
@@ -1324,17 +1587,24 @@ async def show_user_snipers_callback(
     callback: types.CallbackQuery
 ):
     user_id = callback.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await callback.answer(
             "⚠️ Сначала авторизуйтесь.",
             show_alert=True
         )
+
         return
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.get(
                 f"{API_BASE_URL}/snipers/{user_id}",
                 params={
@@ -1345,10 +1615,13 @@ async def show_user_snipers_callback(
             )
 
             if response.status_code != 200:
+
                 await callback.message.answer(
                     await api_error_text(response)
                 )
+
                 await callback.answer()
+
                 return
 
             snipers = response.json().get(
@@ -1357,6 +1630,7 @@ async def show_user_snipers_callback(
             )
 
         except Exception as e:
+
             logging.error(
                 "Ошибка получения снайперов: %s",
                 e
@@ -1365,10 +1639,13 @@ async def show_user_snipers_callback(
             await callback.message.answer(
                 "⚠️ Ошибка получения снайперов."
             )
+
             await callback.answer()
+
             return
 
     if not snipers:
+
         builder = InlineKeyboardBuilder()
 
         builder.button(
@@ -1382,12 +1659,16 @@ async def show_user_snipers_callback(
         )
 
         await callback.answer()
+
         return
 
     builder = InlineKeyboardBuilder()
 
     for sniper in snipers:
-        sniper_id = sniper.get("id")
+
+        sniper_id = sniper.get(
+            "id"
+        )
 
         if sniper_id is None:
             continue
@@ -1496,17 +1777,24 @@ async def delete_single_sniper_handler(
     )[1]
 
     user_id = callback.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await callback.answer(
             "⚠️ Сначала авторизуйтесь.",
             show_alert=True
         )
+
         return
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.delete(
                 f"{API_BASE_URL}/snipers/single/{sniper_id}",
                 params={
@@ -1517,13 +1805,16 @@ async def delete_single_sniper_handler(
             )
 
             if response.status_code != 200:
+
                 await callback.answer(
                     await api_error_text(response),
                     show_alert=True
                 )
+
                 return
 
         except Exception as e:
+
             logging.error(
                 "Ошибка удаления снайпера: %s",
                 e
@@ -1533,6 +1824,7 @@ async def delete_single_sniper_handler(
                 "⚠️ Ошибка подключения к серверу.",
                 show_alert=True
             )
+
             return
 
     await callback.answer(
@@ -1554,17 +1846,24 @@ async def delete_all_snipers_handler(
     callback: types.CallbackQuery
 ):
     user_id = callback.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await callback.answer(
             "⚠️ Сначала авторизуйтесь.",
             show_alert=True
         )
+
         return
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.delete(
                 f"{API_BASE_URL}/snipers/{user_id}",
                 params={
@@ -1575,13 +1874,16 @@ async def delete_all_snipers_handler(
             )
 
             if response.status_code != 200:
+
                 await callback.answer(
                     await api_error_text(response),
                     show_alert=True
                 )
+
                 return
 
         except Exception as e:
+
             logging.error(
                 "Ошибка удаления всех снайперов: %s",
                 e
@@ -1591,6 +1893,7 @@ async def delete_all_snipers_handler(
                 "⚠️ Ошибка подключения к серверу.",
                 show_alert=True
             )
+
             return
 
     await callback.answer(
@@ -1658,24 +1961,31 @@ async def process_new_price(
     )
 
     if new_price is None:
+
         await message.answer(
             "⚠️ Пожалуйста, введите корректную "
             "положительную цену.\n\n"
             "Например: `350000`",
             parse_mode="Markdown"
         )
+
         return
 
     user_id = message.from_user.id
-    license_key = get_user_license(user_id)
+
+    license_key = get_user_license(
+        user_id
+    )
 
     if not license_key:
+
         await state.clear()
 
         await message.answer(
             "⚠️ Ваша сессия авторизации закончилась.\n"
             "Введите ключ заново."
         )
+
         return
 
     data = await state.get_data()
@@ -1685,15 +1995,19 @@ async def process_new_price(
     )
 
     if not sniper_id:
+
         await state.clear()
 
         await message.answer(
             "⚠️ Не удалось определить снайпер."
         )
+
         return
 
     async with httpx.AsyncClient() as client:
+
         try:
+
             response = await client.patch(
                 f"{API_BASE_URL}/snipers/{sniper_id}",
                 params={
@@ -1707,15 +2021,18 @@ async def process_new_price(
             )
 
             if response.status_code != 200:
+
                 await message.answer(
                     "❌ Не удалось обновить цену.\n\n"
                     f"{await api_error_text(response)}"
                 )
 
                 await state.clear()
+
                 return
 
         except Exception as e:
+
             logging.error(
                 "Ошибка обновления снайпера: %s",
                 e
@@ -1726,6 +2043,7 @@ async def process_new_price(
             )
 
             await state.clear()
+
             return
 
     await state.clear()
@@ -1746,6 +2064,7 @@ async def process_new_price(
 # ============================================================
 
 async def main():
+
     logging.info(
         "🚀 Запуск Telegram-бота Stalzone..."
     )
